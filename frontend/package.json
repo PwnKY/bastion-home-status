@@ -1,0 +1,17 @@
+{
+  "name": "home-network-status-frontend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bastion 家庭网络状态页 · 黑色视觉原型（合成数据，无后端/认证）",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test",
+    "check:ui": "npm run build && node scripts/browser-check.mjs"
+  },
+  "devDependencies": {
+    "vite": "^6.4.3"
+  }
+}

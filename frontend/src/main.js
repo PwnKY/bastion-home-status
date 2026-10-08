@@ -1,0 +1,319 @@
+import './styles.css';
+import { createDemoSnapshot, SCENARIOS } from './data.js';
+import { deriveView, formatLatency, getHistoryStats } from './model.js';
+
+// Local visual prototype only. No HTTP requests, authentication, or device commands.
+const app = document.querySelector('#app');
+const dialog = document.querySelector('#service-dialog');
+const NAV = [
+  { id: 'overview', label: '网络总览', icon: 'grid', caption: 'OVERVIEW' },
+  { id: 'services', label: '服务观测', icon: 'layers', caption: 'SERVICES' },
+  { id: 'paths', label: '连接路径', icon: 'route', caption: 'CONNECTIVITY' },
+  { id: 'events', label: '事件时间线', icon: 'clock', caption: 'TIMELINE' },
+];
+const GROUPS = [
+  { id: 'all', label: '全部服务' },
+  { id: 'network', label: '家庭网络' },
+  { id: 'access', label: '远程接入' },
+  { id: 'application', label: '家庭业务' },
+  { id: 'monitoring', label: '采集健康' },
+];
+const STATUS = {
+  healthy: { label: '正常', short: '正常', class: 'healthy' },
+  degraded: { label: '降级', short: '降级', class: 'degraded' },
+  down: { label: '故障', short: '故障', class: 'down' },
+  unknown: { label: '未知', short: '未知', class: 'unknown' },
+  untested: { label: '未测试', short: '未测', class: 'untested' },
+  maintenance: { label: '维护中', short: '维护', class: 'maintenance' },
+};
+const PATHS = {
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  layers: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/>',
+  route: '<circle cx="5" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 5h8a4 4 0 0 1 0 8H9a4 4 0 0 0 0 8h8"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V10Z"/><path d="M9 21V12h6v9"/>',
+  arrow: '<path d="M5 12h14m-5-5 5 5-5 5"/>',
+  diagonal: '<path d="M6 18 18 6M6 6h12v12"/>',
+  chevron: '<path d="m9 5 7 7-7 7"/>',
+  down: '<path d="m7 10 5 5 5-5"/>',
+  refresh: '<path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 11-2l3 3M4 16l3 3a7 7 0 0 0 11-2"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>',
+  shield: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/>',
+  activity: '<path d="M2 12h5l3-8 4 16 3-8h5"/>',
+  server: '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M12 6.5h5M12 17.5h5"/>',
+  link: '<path d="m9 15 6-6M8 16l-2 2a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M16 8l2-2a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" transform="translate(2 0) scale(.83 1)"/>',
+  cloud: '<path d="M6 19a5 5 0 0 1-1-10 7 7 0 0 1 13-2 6 6 0 0 1 0 12H6Z"/>',
+  search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>',
+  close: '<path d="m6 6 12 12M6 18 18 6"/>',
+  check: '<path d="m5 12 4 4L19 6"/>',
+  alert: '<path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v4M12 17h.01"/>',
+  pause: '<path d="M9 5v14M15 5v14"/>',
+  pulse: '<path d="M3 12h3l3-7 5 14 3-7h4"/>',
+};
+const SERVICE_ICONS = { gateway: 'server', dns: 'globe', ipv4: 'globe', ipv6: 'globe', proxy: 'route', 'headscale-base': 'shield', 'headscale-control': 'link', 'tailscale-path': 'route', 'derp-base': 'server', 'tunnel-ready': 'cloud', 'home-app': 'home', collectors: 'pulse' };
+const e = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+const icon = (name, extra = '') => `<svg class="icon ${extra}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PATHS[name] || PATHS.activity}</svg>`;
+const fmt = (value, options) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', ...options }).format(new Date(value));
+const time = (value) => fmt(value, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+const dateTime = (value) => fmt(value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+const percent = (value) => value === null || value === undefined ? '—' : `${Number(value).toFixed(1)}%`;
+const statusOf = (status) => STATUS[status] || STATUS.unknown;
+const badge = (status, text) => `<span class="status-badge ${statusOf(status).class}"><span class="status-dot"></span>${e(text || statusOf(status).label)}</span>`;
+const ageText = (value) => {
+  const age = Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 1000));
+  return age < 60 ? `${age} 秒前` : age < 3600 ? `${Math.floor(age / 60)} 分钟前` : `${Math.floor(age / 3600)} 小时前`;
+};
+const age = (value) => `<span data-age="${e(value)}" title="${e(dateTime(value))}（北京时间）">${ageText(value)}</span>`;
+
+const state = { scenario: 'degraded', page: 'overview', group: 'network', statusFilter: 'all', search: '', range: '24h', eventFilter: 'all', menuOpen: false };
+let snapshot = createDemoSnapshot(state.scenario);
+let view = deriveView(snapshot);
+let toastTimer;
+let previousSignature = '';
+const mobileQuery = window.matchMedia('(max-width: 900px)');
+
+function service(id) { return view.services.find((entry) => entry.id === id); }
+function toast(message) {
+  const target = document.querySelector('#toast');
+  target.textContent = message;
+  target.classList.add('visible');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => target.classList.remove('visible'), 3200);
+}
+
+function sparkline(points, color = 'var(--green)', area = false) {
+  const values = points.map((point) => typeof point === 'number' ? point : point.value);
+  const min = Math.min(...values) * .75;
+  const max = Math.max(...values) * 1.15;
+  const coords = values.map((value, index) => `${(index / Math.max(1, values.length - 1) * 160).toFixed(1)},${(42 - (value - min) / (max - min || 1) * 32).toFixed(1)}`).join(' ');
+  return `<svg class="sparkline" viewBox="0 0 160 48" preserveAspectRatio="none" aria-hidden="true">${area ? `<polygon points="0,48 ${coords} 160,48" fill="${color}" opacity=".07"/>` : ''}<polyline points="${coords}" fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+function shell(content) {
+  const active = NAV.find((item) => item.id === state.page);
+  return `<aside class="sidebar ${state.menuOpen ? 'is-open' : ''}" aria-label="主要导航" ${mobileQuery.matches && !state.menuOpen ? 'inert' : ''}>
+    <a href="#overview" class="brand" aria-label="Bastion 网络总览"><span class="brand-symbol">${icon('home')}</span><span>bastion<span class="brand-period">.</span></span></a>
+    <div class="workspace"><span class="workspace-icon">${icon('home')}</span><div><strong>家庭网络</strong><span>PERSONAL WORKSPACE</span></div><span class="workspace-dot"></span></div>
+    <span class="nav-label">观察你的连接</span>
+    <nav>${NAV.map((item) => `<a href="#${item.id}" class="nav-item ${state.page === item.id ? 'active' : ''}" ${state.page === item.id ? 'aria-current="page"' : ''}>${icon(item.icon)}<span>${item.label}</span>${item.id === 'events' && view.incidents.some((entry) => entry.status === 'investigating') ? '<span class="nav-indicator"></span>' : ''}</a>`).join('')}</nav>
+    <div class="sidebar-bottom"><div class="local-label"><span class="status-dot"></span>本地视觉原型<span class="mono">v0.1</span></div><p>不连接真实设备<br>不执行网络诊断</p><div class="sidebar-signature">A QUIETER VIEW OF YOUR NETWORK.</div></div>
+  </aside>
+  ${state.menuOpen ? '<button class="menu-scrim" data-action="close-menu" aria-label="关闭导航"></button>' : ''}
+  <div class="workspace-body" ${mobileQuery.matches && state.menuOpen ? 'inert' : ''}><header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" data-action="menu" data-focus="menu" aria-label="切换导航" aria-expanded="${state.menuOpen}">${icon('grid')}</button><span class="breadcrumb-home">工作空间</span><span class="slash">/</span><span>${active.label}</span></div><div class="topbar-right"><span class="timezone mono">UTC+8</span><span class="demo-badge"><span></span>演示模式</span><span class="avatar" aria-label="演示工作空间">B</span></div></header>
+  <main id="main-content" tabindex="-1"><section class="page-heading"><div><div class="eyebrow">${active.caption}<span class="eyebrow-line"></span>HOME NETWORK</div><h1>${state.page === 'overview' ? '每一段连接，都有迹可循。' : active.label}</h1><p>${{ overview: '从家庭出口到远程接入，用清晰的观测代替猜测。', services: '健康、可达与业务可用，是三个不同的答案。', paths: '把控制连接、数据链路和业务访问分开看。', events: '留下证据，才能看清每一次中断与恢复。' }[state.page]}</p></div><div class="heading-actions"><label class="scenario-control"><span class="sr-only">演示场景</span><select data-control="scenario" data-focus="scenario" aria-label="演示场景">${SCENARIOS.map((item) => `<option value="${item.id}" ${item.id === state.scenario ? 'selected' : ''}>${e(item.label.replace('（演示）', ''))}</option>`).join('')}</select>${icon('down')}</label><button class="button refresh-button" data-action="refresh" data-focus="refresh">${icon('refresh')}<span>刷新演示</span></button></div></section>
+  <div class="demo-notice">${icon('info')}<span>当前为合成演示快照，不代表真实网络状态。<span class="demo-notice-extra">没有连接设备，也没有登录后的管理数据。</span></span><span class="snapshot-time mono">快照 ${time(snapshot.sampledAt)}</span></div>
+  ${content}
+  <footer class="page-footer"><span><span class="footer-mark">b.</span>状态有边界，观测有时间。</span><span>合成数据 · 北京时间 · 无后端连接</span></footer></main></div>`;
+}
+
+function stats() {
+  const counts = view.statusCounts;
+  const observed = counts.healthy + counts.degraded + counts.down;
+  const overallText = view.collector.stale ? '观测数据缺失' : view.overall.status === 'healthy' ? '已测链路正常' : view.overall.status === 'unknown' ? '当前状态未知' : view.overall.status === 'down' ? '发现服务故障' : '部分链路降级';
+  const tone = view.collector.stale ? 'unknown' : view.overall.status;
+  const ipv4 = service('ipv4');
+  return `<section class="stats-grid" aria-label="状态摘要">
+    <article class="stat-card"><div class="stat-label">当前概况${icon('activity')}</div><div class="stat-value stat-text ${tone}"><span class="large-dot"></span>${overallText}</div><div class="stat-foot">${counts.healthy} 正常<span class="separator">/</span>${counts.degraded} 降级<span class="separator">/</span>${counts.unknown} 未知</div><div class="stat-decoration" aria-hidden="true">${Array.from({ length: 16 }, (_, i) => `<i class="${i > 11 ? tone : 'healthy'}"></i>`).join('')}</div></article>
+    <article class="stat-card"><div class="stat-label">IPv4 出口延迟${icon('globe')}</div><div class="stat-value mono">${ipv4.latencyMs === null ? '—' : ipv4.latencyMs}<span class="stat-unit">${ipv4.latencyMs === null ? '暂无新鲜结果' : 'ms'}</span></div><div class="stat-foot">${ipv4.stale ? '历史结果已过期' : '家庭侧实测 · 合成样本'}</div>${ipv4.stale ? '<div class="quiet-line"></div>' : sparkline(snapshot.metrics.latencyTrend, 'var(--green)', true)}</article>
+    <article class="stat-card"><div class="stat-label">当前观测覆盖${icon('layers')}</div><div class="stat-value mono">${observed}<span class="stat-denominator">/ ${view.services.length}</span></div><div class="stat-foot">${counts.untested} 项未测试${counts.unknown ? ` · ${counts.unknown} 项未知` : ' · 不把未测算成失败'}</div><div class="coverage-track">${view.services.map((entry) => `<i class="${entry.status}" title="${e(entry.name)}：${statusOf(entry.status).label}"></i>`).join('')}</div></article>
+    <article class="stat-card"><div class="stat-label">家庭采集心跳${icon('pulse')}</div><div class="stat-value stat-text ${view.collector.stale ? 'unknown' : 'healthy'}">${view.collector.stale ? icon('pause') : icon('check')}${view.collector.stale ? '观测已过期' : '快照内有效'}</div><div class="stat-foot">${age(view.collector.lastHeartbeatAt)}<span class="separator">/</span>90 秒过期</div><div class="heartbeat-rule"><span class="mono">30s INTERVAL</span><span class="${view.collector.stale ? 'unknown' : 'healthy'}">${view.collector.stale ? 'STALE' : 'SAMPLE'}</span></div></article>
+  </section>`;
+}
+
+function tabs() {
+  const options = state.page === 'overview' ? GROUPS.filter((entry) => ['network', 'access'].includes(entry.id)) : GROUPS;
+  return `<div class="group-tabs" role="group" aria-label="服务分组">${options.map((group) => `<button class="tab ${state.group === group.id ? 'active' : ''}" data-group="${group.id}" data-focus="group-${group.id}" aria-pressed="${state.group === group.id}">${group.label}<span>${group.id === 'all' ? view.services.length : view.services.filter((entry) => entry.group === group.id).length}</span></button>`).join('')}</div>`;
+}
+
+function historyStrip(entry) {
+  return `<div class="uptime-strip" role="img" aria-label="${e(entry.name)}过去24小时状态；${entry.history.filter((point) => point.status === 'unknown').length}个未知样本">${entry.history.map((point) => `<span class="${point.status}" title="${e(dateTime(point.at))} · ${statusOf(point.status).label}"></span>`).join('')}</div>`;
+}
+
+function serviceRows() {
+  const query = state.search.trim().toLowerCase();
+  const filtered = view.services.filter((entry) => (state.group === 'all' || entry.group === state.group) && (state.statusFilter === 'all' || entry.status === state.statusFilter) && (!query || `${entry.name} ${entry.subtitle}`.toLowerCase().includes(query)));
+  return filtered.length ? filtered.map((entry) => `<button class="service-row" data-service="${e(entry.id)}" aria-label="查看${e(entry.name)}详情"><span class="service-identity"><span class="service-icon">${icon(SERVICE_ICONS[entry.id])}</span><span><strong>${e(entry.name)}</strong><small>${entry.stale && entry.status !== 'untested' ? '观测已过期 · 当前结论未知' : e({ gateway: '设备与接口', dns: '真实解析应答', ipv4: '直出路径 · IPv4', ipv6: '独立观测 · IPv6', proxy: '明确代理路径', 'headscale-base': '基础接口，不代表节点同步', 'headscale-control': '家庭侧控制会话', 'tailscale-path': '节点间实测，不代表业务', 'derp-base': '仅基础可达性', 'tunnel-ready': '就绪连接，不代表回源', 'home-app': '端到端访问尚未验证', collectors: '采集链路与心跳' }[entry.id])}</small></span></span><span class="service-state">${badge(entry.status)}</span><span class="service-latency mono">${formatLatency(entry.latencyMs)}</span><span class="service-history">${historyStrip(entry)}<span class="history-caption"><span>24h</span><span class="mono">${percent(entry.availability24h)}</span></span></span><span class="row-arrow">${icon('chevron')}</span></button>`).join('') : `<div class="empty-state">${icon('search')}<h3>没有匹配的观测项</h3><p>试试其他名称、状态或分组。</p><button class="button" data-action="clear-filters">清除筛选</button></div>`;
+}
+
+function servicePanel(full = false) {
+  return `<section class="panel service-panel"><div class="panel-heading"><div><h2>服务观测<span class="count-badge">${view.services.length}</span></h2><p>每一项状态，都有自己的检测边界</p></div>${full ? '<span class="tiny-label">SYNTHETIC OBSERVATIONS</span>' : '<a href="#services" class="text-link">查看全部' + icon('arrow') + '</a>'}</div>${tabs()}${full ? `<div class="service-filters"><label class="search-field">${icon('search')}<input type="search" placeholder="搜索服务…" aria-label="搜索服务" data-control="search" data-focus="search" value="${e(state.search)}" /></label><label class="filter-select"><span class="sr-only">筛选状态</span><select data-control="status" data-focus="status" aria-label="筛选状态"><option value="all">所有状态</option>${Object.entries(STATUS).map(([key, value]) => `<option value="${key}" ${state.statusFilter === key ? 'selected' : ''}>${value.label}</option>`).join('')}</select>${icon('down')}</label></div>` : ''}<div class="table-labels"><span>服务 / 检测范围</span><span>当前状态</span><span>延迟</span><span>24h 可用率</span><span></span></div><div id="service-rows">${serviceRows()}</div><div class="panel-footnote">${icon('info')}降级计为可用；未知、未测与维护不计入可用率分母。</div></section>`;
+}
+
+function topology() {
+  const entries = ['gateway', 'headscale-control', 'tunnel-ready', 'tailscale-path'].map(service);
+  const [gateway, control, tunnel, data] = entries;
+  const color = (entry) => ({ healthy: '#9bc5a6', degraded: '#d9ad70', unknown: '#626771' }[entry.status] || '#626771');
+  return `<div class="topology-map"><svg viewBox="0 0 440 240" role="img" aria-label="家庭网关分别连接控制端、隧道与用户数据链路，颜色表示各自观测状态"><defs><pattern id="topology-grid" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".65" fill="#30343a"/></pattern></defs><rect width="440" height="240" fill="url(#topology-grid)" opacity=".55"/>
+    <path d="M120 120h52q18 0 18-18V58q0-14 16-14h69M120 120h155M120 120h52q18 0 18 18v44q0 14 16 14h69" fill="none" stroke="#353940" stroke-width="1.5"/>
+    <path d="M120 120h52q18 0 18-18V58q0-14 16-14h69" fill="none" stroke="${color(control)}" stroke-width="1.4" stroke-dasharray="4 6" opacity=".7"/>
+    <path d="M120 120h155" fill="none" stroke="${color(tunnel)}" stroke-width="1.4" opacity=".7"/>
+    <path d="M120 120h52q18 0 18 18v44q0 14 16 14h69" fill="none" stroke="${color(data)}" stroke-width="1.4" stroke-dasharray="4 6" opacity=".7"/>
+    <rect x="25" y="89" width="96" height="62" rx="12" fill="#181b1e" stroke="#353a3f"/>
+    <path d="m64 113 9-7 9 7v12H64Z" fill="none" stroke="${color(gateway)}" stroke-width="1.5"/><path d="M70 125v-8h6v8" fill="none" stroke="${color(gateway)}" stroke-width="1.5"/>
+    <circle cx="120" cy="120" r="3" fill="${color(gateway)}"/>
+    <text x="73" y="172" text-anchor="middle" fill="#a7adb5" font-size="11">家庭入口</text>
+    ${[{ y: 23, label: '控制连接', entry: control }, { y: 99, label: 'Cloudflare Tunnel', entry: tunnel }, { y: 175, label: 'Tailscale 数据链路', entry: data }].map(({ y, label, entry }) => `<rect x="275" y="${y}" width="144" height="42" rx="9" fill="#181b1e" stroke="#30353b"/><circle cx="291" cy="${y + 21}" r="3" fill="${color(entry)}"/><text x="303" y="${y + 25}" fill="#b9bec5" font-size="10.5">${label}</text>`).join('')}
+  </svg><div class="topology-label mono">CONTROL ≠ DATA ≠ BUSINESS</div></div>`;
+}
+
+function pathPanel(full = false) {
+  const control = service('headscale-control');
+  const path = service('tailscale-path');
+  const tunnel = service('tunnel-ready');
+  const pathLabel = path.stale ? '当前路径未知' : path.status === 'healthy' ? '本轮已验证直连' : '本轮仅中继可达';
+  return `<section class="panel path-panel"><div class="panel-heading"><div><h2>回家链路${icon('route', 'heading-icon')}</h2><p>不同连接，独立判断</p></div>${full ? '<span class="tiny-label">DEMO TOPOLOGY</span>' : '<a href="#paths" class="text-link" aria-label="查看连接路径">' + icon('diagonal') + '</a>'}</div>${topology()}<div class="path-observations"><button class="path-observation" data-service="headscale-control"><span class="path-observation-icon">${icon('link')}</span><div><strong>控制连接</strong><span>${control.stale ? '没有新鲜的同步观测' : control.status === 'healthy' ? '本轮控制观测正常' : '控制会话存在延迟'}</span></div>${badge(control.status)}</button><button class="path-observation" data-service="tailscale-path"><span class="path-observation-icon">${icon('route')}</span><div><strong>数据链路</strong><span>${pathLabel}</span></div>${badge(path.status, path.stale ? '未知' : path.status === 'healthy' ? '直连' : '中继')}</button><button class="path-observation" data-service="tunnel-ready"><span class="path-observation-icon">${icon('cloud')}</span><div><strong>隧道就绪</strong><span>${tunnel.stale ? '就绪观测已过期' : '合成样本：4 条就绪连接'}</span></div>${badge(tunnel.status)}</button></div><div class="panel-footnote">${icon('info')}链路可达不代表家庭应用已验证可用。</div></section>`;
+}
+
+function chartPanel() {
+  const values = snapshot.metrics.latencyTrend;
+  const width = 760, height = 150, padding = 18;
+  const max = 80;
+  const coords = values.map((point, index) => `${(padding + index / (values.length - 1) * (width - padding * 2)).toFixed(1)},${(height - 12 - point.value / max * (height - 24)).toFixed(1)}`).join(' ');
+  const labels = ['24h 前', '18h 前', '12h 前', '6h 前', '快照时间'];
+  return `<section class="panel chart-panel"><div class="panel-heading"><div><h2>出口延迟趋势</h2><p>合成历史样本 · 单位 ms · 不代表当前延迟</p></div><div class="segmented" role="group" aria-label="历史范围"><button data-range="24h" data-focus="range-24h" class="${state.range === '24h' ? 'active' : ''}" aria-pressed="${state.range === '24h'}">24 小时</button><button data-range="7d" data-focus="range-7d" class="${state.range === '7d' ? 'active' : ''}" aria-pressed="${state.range === '7d'}">7 天</button></div></div>${state.range === '7d' ? '<div class="chart-empty">' + icon('clock') + '<h3>还没有 7 天观测数据</h3><p>不使用 24 小时样本冒充 7 天历史。</p></div>' : `<div class="latency-chart"><div class="chart-y-labels mono"><span>80</span><span>40</span><span>0</span></div><div class="chart-inner"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="24小时合成出口延迟趋势"><defs><linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#9bc5a6" stop-opacity=".12"/><stop offset="100%" stop-color="#9bc5a6" stop-opacity="0"/></linearGradient></defs>${[18, 78, 138].map((y) => `<path d="M0 ${y}H760" stroke="#262b30" stroke-width="1" stroke-dasharray="3 5"/>`).join('')}<polygon points="${padding},${height} ${coords} ${width - padding},${height}" fill="url(#chart-fill)"/><polyline points="${coords}" fill="none" stroke="#9bc5a6" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg><div class="chart-x-labels mono">${labels.map((label) => `<span>${label}</span>`).join('')}</div></div></div>`}<div class="chart-legend"><span><i class="legend-line"></i>历史出口样本</span><span>48 个等间隔样本<span class="separator">·</span>快照 ${time(snapshot.sampledAt)}</span></div></section>`;
+}
+
+function incidentCards(compact = false) {
+  const filtered = view.incidents.filter((entry) => state.eventFilter === 'all' || entry.status === state.eventFilter);
+  if (!filtered.length) return '<div class="empty-state">' + icon('check') + '<h3>这个筛选下没有事件</h3><p>切换其他事件状态查看合成记录。</p></div>';
+  return filtered.slice(0, compact ? 2 : undefined).map((entry) => `<article class="incident ${entry.status}"><div class="incident-marker">${icon(entry.status === 'resolved' ? 'check' : entry.status === 'investigating' ? 'activity' : 'info')}</div><div class="incident-body"><div class="incident-heading"><h3>${e(entry.title.replace('（演示）', ''))}</h3><span class="incident-status">${{ resolved: '已恢复', investigating: '观察中', info: '记录' }[entry.status]}</span></div><p>${e(entry.description.replace('合成事件：', '').replace('；仅用于演示。', '。'))}</p><div class="incident-meta mono"><span>${dateTime(entry.startedAt)}</span>${entry.resolvedAt ? `<span class="incident-duration">持续 ${Math.round((Date.parse(entry.resolvedAt) - Date.parse(entry.startedAt)) / 60000)} 分钟</span>` : '<span>尚无恢复记录</span>'}</div>${!compact ? `<div class="incident-targets">${entry.affectedServiceIds.map((id) => `<button data-service="${e(id)}">${e(service(id)?.name || id)}${icon('diagonal')}</button>`).join('')}</div>` : ''}</div></article>`).join('');
+}
+
+function incidentPanel(compact = true) {
+  return `<section class="panel incident-panel"><div class="panel-heading"><div><h2>最近事件<span class="count-badge">${view.incidents.length}</span></h2><p>合成记录，不是历史故障的真实回放</p></div>${compact ? '<a href="#events" class="text-link">全部事件' + icon('arrow') + '</a>' : '<span class="tiny-label">SYNTHETIC EVENTS</span>'}</div>${!compact ? `<div class="event-tabs segmented" role="group" aria-label="事件状态">${[{ id: 'all', label: '全部' }, { id: 'investigating', label: '观察中' }, { id: 'resolved', label: '已恢复' }, { id: 'info', label: '记录' }].map((item) => `<button data-event-filter="${item.id}" data-focus="event-${item.id}" class="${state.eventFilter === item.id ? 'active' : ''}" aria-pressed="${state.eventFilter === item.id}">${item.label}</button>`).join('')}</div>` : ''}<div class="incident-list">${incidentCards(compact)}</div></section>`;
+}
+
+function boundaryCard() {
+  return `<section class="boundary-card"><div class="boundary-icon">${icon('shield')}</div><div><h3>看清状态，也看清边界。</h3><p>基础健康 ≠ 节点同步，直连成功 ≠ 应用可用。未知只是缺少证据，不是故障的另一种说法。</p></div><span class="tiny-label">OBSERVE, NOT ASSUME.</span></section>`;
+}
+
+function overview() {
+  return `${stats()}<div class="primary-grid">${servicePanel()}${pathPanel()}</div><div class="secondary-grid">${chartPanel()}${incidentPanel()}</div>${boundaryCard()}`;
+}
+function servicesPage() {
+  return `${stats()}${servicePanel(true)}<div class="legend-bar"><span>状态图例</span>${Object.entries(STATUS).map(([key, value]) => `<span><i class="legend-square ${key}"></i>${value.label}</span>`).join('')}<span class="legend-explanation">24h 为等间隔合成样本统计；7 天数据尚未提供。</span></div>${boundaryCard()}`;
+}
+function pathsPage() {
+  const unknown = service('ipv4').stale;
+  return `<div class="paths-layout">${pathPanel(true)}<section class="panel evidence-panel"><div class="panel-heading"><div><h2>出口路径对照</h2><p>每种路径有独立观测，不自动推断根因</p></div>${icon('globe', 'heading-icon')}</div><div class="route-list">${[{ id: 'ipv4', name: '真实地址直出', route: '家庭入口 → 网关 → IPv4 公网', note: '与 DNS / Fake-IP 路径分离' }, { id: 'ipv6', name: 'IPv6 独立出口', route: '家庭入口 → 网关 → IPv6 公网', note: '异常不连带判 IPv4 故障' }, { id: 'proxy', name: '明确代理出口', route: '家庭入口 → 代理 → 目标服务', note: '仅表示合成路径，并非真实抓包证据' }].map((item, index) => `<button class="route-card" data-service="${item.id}"><span class="route-number mono">0${index + 1}</span><div><div class="route-title"><strong>${item.name}</strong>${badge(service(item.id).status)}</div><p class="route-chain">${item.route}</p><small>${item.note}</small></div>${icon('diagonal')}</button>`).join('')}</div><div class="evidence-note">${icon('info')}没有实测路径依据时，只能显示配置声明，不能把请求成功当作路由证明。</div></section></div><section class="panel path-boundaries"><div class="panel-heading"><div><h2>三个问题，三个答案</h2><p>演示分层判定，业务结论保持独立</p></div></div><div class="boundary-columns"><article><span class="mono">01 / CONTROL</span><h3>控制端正常吗？</h3>${badge(service('headscale-base').status)}<p>基础接口能否响应；不证明家庭控制会话同步正常。</p></article><article><span class="mono">02 / DATA</span><h3>节点之间可达吗？</h3>${badge(service('tailscale-path').status)}<p>${unknown ? '旧探测已过期，当前路径未知。' : '合成节点探测有响应；不证明家庭子网或 ACL 正常。'}</p></article><article><span class="mono">03 / BUSINESS</span><h3>应用真的可用吗？</h3>${badge('untested')}<p>尚无外部端到端业务探针，不宣称用户必然可以回家。</p></article></div></section>${boundaryCard()}`;
+}
+function eventsPage() {
+  return `<div class="event-summary"><div class="event-summary-copy">${icon('clock')}<span>每次异常都值得记录，但不是每条错误都代表一次独立故障。</span></div><span class="mono">${view.incidents.filter((entry) => entry.status === 'investigating').length} OBSERVING · ${view.incidents.filter((entry) => entry.status === 'resolved').length} RESOLVED</span></div>${incidentPanel(false)}${boundaryCard()}`;
+}
+
+function render({ preserveFocus = false } = {}) {
+  const active = document.activeElement;
+  const focusId = preserveFocus ? active?.dataset.focus : null;
+  const selectionStart = active instanceof HTMLInputElement ? active.selectionStart : null;
+  const selectionEnd = active instanceof HTMLInputElement ? active.selectionEnd : null;
+  view = deriveView(snapshot);
+  previousSignature = view.services.map((entry) => entry.status).join(',') + view.collector.stale;
+  app.innerHTML = shell({ overview, services: servicesPage, paths: pathsPage, events: eventsPage }[state.page]());
+  document.title = `${NAV.find((entry) => entry.id === state.page).label} · Bastion`;
+  if (focusId) {
+    const target = app.querySelector(`[data-focus="${focusId}"]`);
+    target?.focus({ preventScroll: true });
+    if (target instanceof HTMLInputElement && target.type === 'search' && selectionStart !== null) target.setSelectionRange(selectionStart, selectionEnd);
+  }
+}
+
+function openDetails(id) {
+  view = deriveView(snapshot);
+  const entry = service(id);
+  if (!entry) return;
+  const restoreCloseFocus = dialog.open && dialog.contains(document.activeElement);
+  dialog.dataset.service = id;
+  const stats = getHistoryStats(entry.history);
+  const meaning = entry.status === 'untested' ? '尚未接入端到端业务检测。没有结果，不等于正常，也不等于故障。' : entry.stale ? '这条观测已经过期。历史上报值保留供参考，当前状态只能显示未知。' : entry.summary.replace('合成演示数据：', '');
+  dialog.innerHTML = `<div class="dialog-top"><span class="eyebrow">OBSERVATION DETAILS</span><button class="icon-button" data-action="close-dialog" aria-label="关闭详情">${icon('close')}</button></div><div class="dialog-identity"><span class="dialog-icon">${icon(SERVICE_ICONS[id])}</span><div><h2 id="dialog-title">${e(entry.name)}</h2><p>${e(entry.scope)}</p></div></div><div class="dialog-status">${badge(entry.status)}<span class="mono">${formatLatency(entry.latencyMs)}</span></div><p class="dialog-summary">${e(meaning)}</p><dl class="detail-grid"><div><dt>观测来源</dt><dd>${e(entry.probeLabel)}</dd></div><div><dt>最近观测 · 北京时间</dt><dd class="mono">${dateTime(entry.observedAt)}<small>${entry.status === 'untested' ? '未产生业务测试结果' : entry.stale ? '超过有效期 · 不是当前结果' : '快照内结果 · 不代表真实状态'}</small></dd></div><div><dt>24h 可用率</dt><dd class="mono">${percent(stats.uptimePercent)}<small>分母：${stats.observedCount} 个已测样本</small></dd></div><div><dt>24h 数据覆盖率</dt><dd class="mono">${stats.coverageRatio === null ? '—' : percent(stats.coverageRatio * 100)}<small>已测 / 非维护样本</small></dd></div>${entry.stale && entry.status !== 'untested' ? `<div><dt>历史上报状态</dt><dd>${statusOf(entry.reportedStatus).label}<small>不用于当前结论</small></dd></div><div><dt>历史上报延迟</dt><dd class="mono">${formatLatency(entry.reportedLatencyMs)}<small>不作为当前延迟</small></dd></div>` : ''}</dl><div class="dialog-history"><span class="tiny-label">24H SAMPLE HISTORY</span>${historyStrip(entry)}<div class="history-caption"><span>24h 前</span><span>快照时间</span></div></div><div class="detail-limits"><h3>检测边界</h3>${entry.detail.filter((row) => ['结论限制', '补充限制'].includes(row.label)).map((row) => `<p>${icon('info')}${e(row.value)}</p>`).join('')}</div><div class="dialog-footer">${icon('shield')}仅合成公开摘要，不包含真实节点、地址或管理数据。</div>`;
+  if (!dialog.open) dialog.showModal();
+  if (restoreCloseFocus) dialog.querySelector('[data-action="close-dialog"]').focus({ preventScroll: true });
+}
+
+app.addEventListener('click', (event) => {
+  const target = event.target.closest('button');
+  if (!target) return;
+  if (target.dataset.service) return openDetails(target.dataset.service);
+  if (target.dataset.group) { state.group = target.dataset.group; render({ preserveFocus: true }); return; }
+  if (target.dataset.range) { state.range = target.dataset.range; render({ preserveFocus: true }); return; }
+  if (target.dataset.eventFilter) { state.eventFilter = target.dataset.eventFilter; render({ preserveFocus: true }); return; }
+  switch (target.dataset.action) {
+    case 'refresh': snapshot = createDemoSnapshot(state.scenario); render({ preserveFocus: true }); toast('已生成新的合成演示快照 · 未请求真实设备'); break;
+    case 'clear-filters': state.search = ''; state.statusFilter = 'all'; state.group = 'all'; render(); break;
+    case 'menu': state.menuOpen = !state.menuOpen; render(); if (state.menuOpen) app.querySelector('.sidebar .brand').focus(); break;
+    case 'close-menu': closeMenu(); break;
+  }
+});
+app.addEventListener('change', (event) => {
+  if (event.target.dataset.control === 'scenario') {
+    state.scenario = event.target.value;
+    snapshot = createDemoSnapshot(state.scenario);
+    render({ preserveFocus: true });
+    toast(`已切换至${SCENARIOS.find((item) => item.id === state.scenario).label} · 合成数据`);
+  } else if (event.target.dataset.control === 'status') {
+    state.statusFilter = event.target.value;
+    render({ preserveFocus: true });
+  }
+});
+app.addEventListener('input', (event) => {
+  if (event.target.dataset.control === 'search') {
+    state.search = event.target.value;
+    document.querySelector('#service-rows').innerHTML = serviceRows();
+  }
+});
+dialog.addEventListener('click', (event) => {
+  if (event.target.closest('[data-action="close-dialog"]')) dialog.close();
+  if (event.target === dialog) {
+    const rect = dialog.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+  }
+});
+function closeMenu() {
+  state.menuOpen = false;
+  render();
+  app.querySelector('[data-action="menu"]').focus({ preventScroll: true });
+}
+window.addEventListener('keydown', (event) => {
+  if (!state.menuOpen || !mobileQuery.matches) return;
+  if (event.key === 'Escape') { closeMenu(); return; }
+  if (event.key === 'Tab') {
+    const links = [...app.querySelectorAll('.sidebar a')];
+    const first = links[0], last = links.at(-1);
+    if (event.shiftKey && (document.activeElement === first || !app.querySelector('.sidebar').contains(document.activeElement))) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !app.querySelector('.sidebar').contains(document.activeElement))) {
+      event.preventDefault(); first.focus();
+    }
+  }
+});
+mobileQuery.addEventListener('change', () => {
+  state.menuOpen = false;
+  render({ preserveFocus: true });
+});
+function navigate(initial = false) {
+  const requested = window.location.hash.slice(1);
+  state.page = NAV.some((entry) => entry.id === requested) ? requested : 'overview';
+  state.group = state.page === 'overview' ? 'network' : 'all';
+  state.search = '';
+  state.statusFilter = 'all';
+  state.eventFilter = 'all';
+  state.menuOpen = false;
+  if (dialog.open) dialog.close();
+  render();
+  if (!initial) {
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    document.querySelector('#main-content').focus({ preventScroll: true });
+  }
+}
+window.addEventListener('hashchange', () => navigate());
+navigate(true);
+setInterval(() => {
+  const next = deriveView(snapshot);
+  const signature = next.services.map((entry) => entry.status).join(',') + next.collector.stale;
+  if (signature !== previousSignature) {
+    render({ preserveFocus: true });
+    if (dialog.open) openDetails(dialog.dataset.service);
+  }
+  document.querySelectorAll('[data-age]').forEach((node) => { node.textContent = ageText(node.dataset.age); });
+}, 1000);

@@ -1,0 +1,35 @@
+# Dependencies, generated bundles and local servers
+**/node_modules/
+**/dist/
+**/.vite/
+*.log
+*.local
+coverage/
+
+# Device keys, trust files, secrets and local agent state
+*.pub
+*.pem
+*.key
+*.p12
+*.pfx
+*known_hosts*
+**/.ssh/
+**/.npmrc
+.env
+.env.*
+!.env.example
+.pi/
+
+# Runtime databases and collector state (not source fixtures)
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
