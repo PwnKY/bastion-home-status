@@ -40,9 +40,12 @@ try {
   run('go', ['get', 'github.com/caddyserver/caddy/v2/cmd/caddy@v2.11.7'], temporary);
   run('go', ['get', 'golang.org/x/net@v0.61.0'], temporary);
   mkdirSync(path.join(output, 'caddy-package'), { recursive: true });
+  const packages = capture('go', ['list', '-deps', '-tags=nobadger,nomysql,nopgx', 'github.com/caddyserver/caddy/v2/cmd/caddy'], temporary);
+  if (packages.split('\n').some((name) => name.startsWith('golang.org/x/crypto/openpgp'))) throw new Error('Unmaintained OpenPGP entered the Caddy package graph');
+  writeFileSync(path.join(output, 'caddy-package/packages.txt'), packages + '\n');
   run('go', ['build', '-p', '2', '-trimpath', '-tags=nobadger,nomysql,nopgx', '-ldflags=-s -w', '-o', path.join(output, 'caddy-package/caddy'), 'github.com/caddyserver/caddy/v2/cmd/caddy'], temporary);
   licenses(temporary, path.join(output, 'caddy-package/licenses'));
-  run('tar', ['-czf', 'release/caddy-bastion-linux-amd64.tar.gz', '-C', 'release/caddy-package', 'caddy', 'licenses']);
+  run('tar', ['-czf', 'release/caddy-bastion-linux-amd64.tar.gz', '-C', 'release/caddy-package', 'caddy', 'licenses', 'packages.txt']);
 } finally { rmSync(temporary, { recursive: true, force: true }); }
 const assets = ['bastion-app-linux-amd64.tar.gz', 'bastion-frontend.tar.gz', 'caddy-bastion-linux-amd64.tar.gz'];
 writeFileSync(path.join(output, 'SHA256SUMS'), assets.map((name) => `${createHash('sha256').update(readFileSync(path.join(output, name))).digest('hex')}  ${name}`).join('\n') + '\n');
