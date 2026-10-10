@@ -3,6 +3,8 @@ package collector
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -56,6 +58,14 @@ func Probe(ctx context.Context, c Check) status.Observation {
 	result := status.Observation{Status: "down", Code: "probe_error", PathMode: "unknown"}
 	began := time.Now()
 	switch c.Kind {
+	case "unit", "job":
+		return unitProbe(ctx, c)
+	case "pve":
+		return pveProbe(ctx, c)
+	case "tcp":
+		return tcpProbe(ctx, c)
+	case "peer-pinger", "peer-poll":
+		return peerProbe(c)
 	case "untested":
 		result.Status = "untested"
 		result.Code = "untested"
@@ -65,6 +75,15 @@ func Probe(ctx context.Context, c Check) status.Observation {
 		expected := c.ExpectedStatus
 		if expected == 0 {
 			expected = 200
+		}
+		if c.Kind == "tunnel" && c.MetricURL != "" {
+			statusCode, metrics, metricErr := fetch(ctx, c, c.MetricURL)
+			if metricErr == nil && statusCode == 200 {
+				if value, ok := metric(string(metrics), "cloudflared_tunnel_ha_connections"); ok && value >= 0 && value <= 1000 {
+					n := int(value)
+					result.ReadyConnections = &n
+				}
+			}
 		}
 		if err != nil || code != expected || (c.ExpectedText != "" && strings.TrimSpace(string(body)) != c.ExpectedText) {
 			result.Code = "http_error"
@@ -87,15 +106,7 @@ func Probe(ctx context.Context, c Check) status.Observation {
 		}
 		result.Status = "healthy"
 		result.Code = "ok"
-		if c.Kind == "tunnel" && c.MetricURL != "" {
-			statusCode, metrics, err := fetch(ctx, c, c.MetricURL)
-			if err == nil && statusCode == 200 {
-				if value, ok := metric(string(metrics), "cloudflared_tunnel_ha_connections"); ok && value >= 0 && value <= 1000 {
-					n := int(value)
-					result.ReadyConnections = &n
-				}
-			}
-		}
+
 	case "dns":
 		if err := dns(ctx, c); err != nil {
 			result.Code = "dns_error"
@@ -155,6 +166,21 @@ func fetch(ctx context.Context, c Check, target string) (int, []byte, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	transport.DisableKeepAlives = true
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	if c.CAFile != "" {
+		cert, err := os.ReadFile(c.CAFile)
+		if err != nil || len(cert) > 1024*1024 {
+			return 0, nil, errors.New("invalid probe trust file")
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(cert) {
+			return 0, nil, errors.New("invalid probe trust file")
+		}
+		transport.TLSClientConfig.RootCAs = pool
+	}
 	if c.Network != "" || c.ConnectIP != "" {
 		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 			if c.Network != "" {

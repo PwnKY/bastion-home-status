@@ -41,6 +41,9 @@ var summaries = map[string]string{
 	"health_error": "本机健康接口报告异常。", "space_warning": "存储空间达到预警阈值。", "space_critical": "存储空间达到高风险阈值。",
 	"probe_error": "检测未完成；不据此推断全部网络故障。", "unconfigured": "尚未配置此项检测。", "pending": "连续失败确认中。", "recovering": "响应已恢复，等待连续成功确认。",
 	"untested": "尚未执行此范围的业务验证。", "stale": "没有新鲜观测；未知不代表服务故障。",
+	"process_failed": "指定进程或服务未处于运行态。", "task_failed": "最近一次指定任务执行失败。",
+	"job_overdue": "指定任务缺少有效期内的成功记录。", "resource_stopped": "指定虚拟资源未处于运行态。",
+	"tcp_error": "指定 TCP 端口或协议握手未符合预期。", "path_failed": "既有节点探测中存在新鲜失败记录；不代表全部链路故障。",
 }
 
 type Config struct {

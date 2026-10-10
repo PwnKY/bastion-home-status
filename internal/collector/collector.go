@@ -57,6 +57,12 @@ type Check struct {
 	WarningPercent    float64 `json:"warningPercent,omitempty"`
 	CriticalPercent   float64 `json:"criticalPercent,omitempty"`
 	IntervalSeconds   int     `json:"intervalSeconds,omitempty"`
+	Unit              string  `json:"unit,omitempty"`
+	Target            string  `json:"target,omitempty"`
+	ResourceID        int     `json:"resourceId,omitempty"`
+	ResourceType      string  `json:"resourceType,omitempty"`
+	MaxAgeSeconds     int     `json:"maxAgeSeconds,omitempty"`
+	CAFile            string  `json:"caFile,omitempty"`
 }
 type Agent struct {
 	Config Config
@@ -110,8 +116,8 @@ func New(c Config) (*Agent, error) {
 		if check.ServiceID == "" || seen[check.ServiceID] || len(check.ServiceID) > 64 || check.IntervalSeconds < 0 || check.IntervalSeconds > 86400 || check.IntervalSeconds > 0 && check.IntervalSeconds < 10 || check.Network != "" && check.Network != "tcp4" && check.Network != "tcp6" || check.ConnectIP != "" && (net.ParseIP(check.ConnectIP) == nil || check.ProxyURL != "" || check.Socket != "") {
 			return nil, errors.New("invalid check configuration")
 		}
-		if check.Kind != "http" && check.Kind != "tailscale" && check.Kind != "tunnel" && check.Kind != "dns" && check.Kind != "disk" && check.Kind != "untested" {
-			return nil, errors.New("unsupported check kind")
+		if err := validateAdapter(check); err != nil {
+			return nil, err
 		}
 		seen[check.ServiceID] = true
 	}
@@ -217,9 +223,13 @@ func (a *Agent) Collect(ctx context.Context) Queued {
 			defer func() { <-budget }()
 			samples[i] = Probe(ctx, c)
 			times[i] = time.Now()
-			samples[i].ID = ID()
+			if samples[i].ID == "" {
+				samples[i].ID = ID()
+			}
 			samples[i].ServiceID = c.ServiceID
-			samples[i].CapturedAt = times[i].UTC().Format(time.RFC3339Nano)
+			if samples[i].CapturedAt == "" {
+				samples[i].CapturedAt = times[i].UTC().Format(time.RFC3339Nano)
+			}
 		}(i, c)
 	}
 	group.Wait()
@@ -230,6 +240,9 @@ func (a *Agent) Collect(ctx context.Context) Queued {
 			continue
 		}
 		age := finished.Sub(times[i]).Seconds()
+		if o.AgeSeconds != nil {
+			age += *o.AgeSeconds
+		}
 		o.AgeSeconds = &age
 		valid = append(valid, o)
 	}
