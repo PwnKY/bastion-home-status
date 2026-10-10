@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var identifier = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,96}$`)
@@ -43,8 +44,13 @@ var summaries = map[string]string{
 	"untested": "尚未执行此范围的业务验证。", "stale": "没有新鲜观测；未知不代表服务故障。",
 	"process_failed": "指定进程或服务未处于运行态。", "task_failed": "最近一次指定任务执行失败。",
 	"job_overdue": "指定任务缺少有效期内的成功记录。", "resource_stopped": "指定虚拟资源未处于运行态。",
-	"icmp_error": "指定 IPv6 ICMP Echo 未得到匹配应答；不代表 DNS 或业务故障。", "icmp_unavailable": "本机未能提供无需额外权限的 IPv6 ICMP 检测。",
-	"tcp_error": "指定 TCP 端口或协议握手未符合预期。", "path_failed": "既有节点探测中存在新鲜失败记录；不代表全部链路故障。",
+	"icmp_error": "指定 ICMP Echo 未得到匹配应答；不代表 DNS 或业务故障。", "icmp_unavailable": "本机未能提供无需额外权限的 ICMP 检测。",
+	"job_no_record": "本次启动尚无有效任务完成记录。", "job_previous_boot": "找到任务日志记录，仅作历史参考；未验证当前新鲜度。",
+	"peer_no_evidence": "暂无新鲜的在线节点探测事件；不是节点故障。",
+	"control_wait":     "等待新控制消息；已有累计计数不作为当前通信证明。", "control_fresh": "近期观察到控制消息增长；不证明路由或访问策略完全同步。",
+	"control_stale": "近期未观察到新控制消息；当前控制通信未知。", "control_unavailable": "本机控制证据不可读取或客户端尚未运行；不据此判断远端故障。",
+	"control_warning": "近期观察到控制消息，但本地客户端仍报告健康警告。",
+	"tcp_error":       "指定 TCP 端口或协议握手未符合预期。", "path_failed": "既有节点探测中存在新鲜失败记录；不代表全部链路故障。",
 }
 
 type Config struct {
@@ -74,17 +80,39 @@ type Definition struct {
 	BusinessProbe     bool   `json:"businessProbe,omitempty"`
 	StaleAfterSeconds int    `json:"staleAfterSeconds"`
 }
+
+// Evidence is a bounded reference, not a substitute for current freshness.
+// At is the source's recorded wall time; no raw journal text or peer identity is exported.
+type Evidence struct {
+	Kind       string `json:"kind"`
+	At         string `json:"at"`
+	Historical bool   `json:"historical"`
+}
+
+func validEvidence(e *Evidence) bool {
+	if e == nil {
+		return true
+	}
+	if e.Kind != "job_success" && e.Kind != "job_failure" && e.Kind != "peer_success" && e.Kind != "peer_failure" && e.Kind != "control_message" {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339Nano, e.At)
+	return err == nil && len(e.At) <= 40 && at.Year() >= 2000 && at.Year() <= 2100
+}
+
 type Observation struct {
-	ID               string   `json:"id"`
-	ServiceID        string   `json:"serviceId"`
-	Status           string   `json:"status"`
-	Code             string   `json:"code"`
-	AgeSeconds       *float64 `json:"ageSeconds"`
-	CapturedAt       string   `json:"capturedAt,omitempty"`
-	LatencyMS        *float64 `json:"latencyMs"`
-	PathMode         string   `json:"pathMode,omitempty"`
-	ReadyConnections *int     `json:"readyConnections,omitempty"`
-	UsagePercent     *float64 `json:"usagePercent,omitempty"`
+	ID                string    `json:"id"`
+	ServiceID         string    `json:"serviceId"`
+	Status            string    `json:"status"`
+	Code              string    `json:"code"`
+	AgeSeconds        *float64  `json:"ageSeconds"`
+	CapturedAt        string    `json:"capturedAt,omitempty"`
+	LatencyMS         *float64  `json:"latencyMs"`
+	PathMode          string    `json:"pathMode,omitempty"`
+	ReadyConnections  *int      `json:"readyConnections,omitempty"`
+	UsagePercent      *float64  `json:"usagePercent,omitempty"`
+	Evidence          *Evidence `json:"evidence,omitempty"`
+	CheckedAgeSeconds *float64  `json:"checkedAgeSeconds,omitempty"`
 }
 type Batch struct {
 	ID      string        `json:"id"`
@@ -105,20 +133,21 @@ type Detail struct {
 }
 type Service struct {
 	Definition
-	Status             string   `json:"status"`
-	ObservedAt         *string  `json:"observedAt"`
-	ObservedAgeSeconds *float64 `json:"observedAgeSeconds"`
-	LatencyMS          *float64 `json:"latencyMs"`
-	Availability24h    *float64 `json:"availability24h"`
-	Availability7d     *float64 `json:"availability7d"`
-	Coverage           *float64 `json:"coverage"`
-	Summary            string   `json:"summary"`
-	ProbeLabel         string   `json:"probeLabel"`
-	History            []Point  `json:"history"`
-	Detail             []Detail `json:"detail"`
-	PathMode           string   `json:"pathMode"`
-	ReadyConnections   *int     `json:"readyConnections"`
-	UsagePercent       *float64 `json:"usagePercent"`
+	Status             string    `json:"status"`
+	ObservedAt         *string   `json:"observedAt"`
+	ObservedAgeSeconds *float64  `json:"observedAgeSeconds"`
+	LatencyMS          *float64  `json:"latencyMs"`
+	Availability24h    *float64  `json:"availability24h"`
+	Availability7d     *float64  `json:"availability7d"`
+	Coverage           *float64  `json:"coverage"`
+	Summary            string    `json:"summary"`
+	ProbeLabel         string    `json:"probeLabel"`
+	History            []Point   `json:"history"`
+	Detail             []Detail  `json:"detail"`
+	PathMode           string    `json:"pathMode"`
+	ReadyConnections   *int      `json:"readyConnections"`
+	UsagePercent       *float64  `json:"usagePercent"`
+	Evidence           *Evidence `json:"evidence,omitempty"`
 }
 type Collector struct {
 	ID                  string   `json:"id"`
@@ -231,7 +260,7 @@ func validateBatch(b Batch, c Config, agent string) error {
 	ids := map[string]bool{}
 	services := map[string]bool{}
 	for _, o := range b.Samples {
-		if !identifier.MatchString(o.ID) || ids[o.ID] || !statuses[o.Status] || summaries[o.Code] == "" || len(o.CapturedAt) > 40 {
+		if !identifier.MatchString(o.ID) || ids[o.ID] || !statuses[o.Status] || summaries[o.Code] == "" || len(o.CapturedAt) > 40 || !validEvidence(o.Evidence) {
 			return errors.New("invalid observation")
 		}
 		if _, ok := c.definition(o.ServiceID, agent); !ok {
@@ -257,6 +286,9 @@ func validateBatch(b Batch, c Config, agent string) error {
 		}
 		if o.ReadyConnections != nil && (*o.ReadyConnections < 0 || *o.ReadyConnections > 1000) {
 			return errors.New("invalid connections")
+		}
+		if o.CheckedAgeSeconds != nil && (o.AgeSeconds == nil || !finiteRange(*o.CheckedAgeSeconds, 0, 7776000) || *o.CheckedAgeSeconds > *o.AgeSeconds || (o.Code != "control_fresh" && o.Code != "control_warning")) {
+			return errors.New("invalid control assessment age")
 		}
 		if o.PathMode != "" && o.PathMode != "unknown" && o.PathMode != "direct" && o.PathMode != "relay" && o.PathMode != "mixed" {
 			return errors.New("invalid path")

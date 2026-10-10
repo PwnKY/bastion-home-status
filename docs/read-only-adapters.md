@@ -5,21 +5,36 @@ The collector additionally supports these private-config check kinds:
 | Kind | Fields | What it proves |
 | --- | --- | --- |
 | `unit` | `unit` | Loaded systemd unit active; not application success |
-| `job` | `unit`, `maxAgeSeconds` | Latest oneshot succeeded within the age budget; inactive is normal |
+| `job` | `unit`, `maxAgeSeconds`, optional `journalHistory` | Latest oneshot succeeded within a verified monotonic age budget; inactive is normal |
 | `pve` | `resourceType`: node/qemu/lxc, `resourceId` | One matching local PVE resource online/running; not guest routing/business |
 | `tcp` | `target`, optional `expectedText` prefix | Port accepts a connection and optional banner; not authenticated business |
 | `icmp4` | `target`: explicit RFC1918 IPv4 literal | One matched LAN ICMPv4 Echo reply and monotonic RTT; not Wi-Fi quality, internet or all clients |
 | `icmp6` | `target`: explicit public IPv6 literal | One matched ICMPv6 Echo reply and monotonic RTT; not DNS, HTTPS, all routes or business |
 | `peer-poll` | `path` | Existing peer-pinger local status poll fresh within 30 seconds; not control-server synchronization |
 | `peer-pinger` | `path`, `maxAgeSeconds` | Fresh ping events from currently online/present peers; not all peers or application traffic |
+| `control-stream` | `unit`, `maxAgeSeconds` (20–180), usually `intervalSeconds:30` | Recent growth of existing Tailscale control-response messages; not complete route/ACL synchronization |
 
 No adapter starts/stops a unit or invokes a shell. systemctl show and pvesh get use fixed argument lists, six-second deadlines and one-MiB output budgets. Unit names are validated. Stopped templates should not be configured as expected-running resources. Jobs use monotonic execution timestamps; missing/reboot-invalid timestamps are unknown, never assumed success.
 
-The peer adapter never runs a ping. It reads version-1 evidence, excludes stale/future/offline peers and publishes no peer names, addresses or raw output. A fresh failed subset is degraded rather than a claim that every link is down. It preserves evidence age and a stable source-event ID so rereading a file cannot refresh old evidence or multiply failure counts. Missing event evidence remains unknown. Its default age budget is 180 seconds; configure it no longer than the backend service validity window. The existing event-triggered pinger may legitimately produce no fresh event during a stable connection; do not add a ping loop merely to make the dashboard green.
+The peer adapter never runs a ping. It reads version-1 evidence, excludes stale/future/offline peers and publishes no peer names, addresses or raw output. A fresh failed subset is degraded rather than a claim that every link is down. It preserves evidence age and a stable source-event ID so rereading a file cannot refresh old evidence or multiply failure counts. Missing event evidence remains unknown. An expired event from an online/present peer can remain an optional, source-clock `evidence` reference without current path, RTT or success. Future records and offline/absent peers are still excluded. Its default age budget is 180 seconds; configure it no longer than the backend service validity window. The existing event-triggered pinger may legitimately produce no fresh event during a stable connection; do not add a ping loop merely to make the dashboard green.
 
 HTTP checks accept an optional per-check `caFile`. Trust is added explicitly; certificate hostname verification is never disabled. This permits private CA management interfaces without publishing their names or certificates in example configs.
 
 Cloudflared metrics are read even when readiness fails, so a measured zero connection count is retained. It is not a synthetic default.
+
+## Optional systemd journal references
+
+`journalHistory:true` is opt-in and valid only for `job`. The fallback judges a loaded oneshot only when it has no valid execution timestamp; otherwise it may attach the exact journal reference without changing the existing current-unit judgement. It never starts the job or changes the update script/timer. `journalctl` reads at most 24 filtered completion/failure records, within the command deadline/output budget. Records must match the configured unit, trusted PID 1/root journal metadata, fixed systemd message IDs and structured results; application text and default `Result=success` are not completion evidence.
+
+A current-boot record can prove completion age using the kernel boot ID and journal monotonic timestamp. A previous-boot record **cannot prove elapsed age without trusted cross-host wall-clock validation**. This implementation therefore keeps it unknown and exports only fixed success/failure kind, unchanged source time and `historical:true`. It does not declare a previous-boot success fresh, overdue or recovered. Repeated reads are unknown monitoring attempts, not new task completions; the historical timestamp never renews. No raw journal text, unit identity or boot identifier enters the public evidence object.
+
+## Passive recent control communication
+
+The adapter invokes only fixed `systemctl show`, `tailscale status --json` and `tailscale debug metrics` reads within a shared six-second deadline and one-MiB per-command output limit. It verifies the daemon start identity before and after reading and requires Running/Online, an active control poll and a strictly increasing `controlclient_map_response_message` counter. Nonzero cumulative counters, a healthy process or Self.Online alone are insufficient. Metrics with missing/duplicate/labeled/nonfinite counters are rejected; raw metrics and node identities are discarded.
+
+The first reading, agent/daemon restart, counter reset, backwards uptime, unreadable snapshot or excessive read gap resets the volatile baseline to unknown. No tracker persistence turns startup counters into new traffic. The oldest possible message time is the **start of the preceding read**; current wall-clock polling is not a message timestamp. Unchanged counters retain the same event ID/age, then become unknown at the configured age budget. A local health warning is degraded, not a claim that all peers are down. Configure the adapter age no longer than the backend service validity window. No login/up/down/reconnect, peer ping or daemon/network configuration change is performed.
+
+This adapter requires the updated backend before collector activation: `checkedAgeSeconds` orders the newer assessment while `ageSeconds` still bounds evidence expiry. Queued/replayed observations age both clocks; replay never updates current. Reference timestamps shown by the frontend are explicitly source-clock records, not server-verified wall time.
 
 ## Bounded LAN IPv4 and public IPv6 Echo
 

@@ -116,13 +116,19 @@ func (s *Store) Ingest(agent string, b Batch, now time.Time) error {
 			continue
 		}
 		var lastAt int64
-		var previous string
+		var previous, previousRaw string
 		var fails, successes int
-		err = tx.QueryRow(`SELECT observed,status,failures,successes FROM current WHERE service=?`, o.ServiceID).Scan(&lastAt, &previous, &fails, &successes)
+		err = tx.QueryRow(`SELECT observed,status,failures,successes,data FROM current WHERE service=?`, o.ServiceID).Scan(&lastAt, &previous, &fails, &successes, &previousRaw)
 		if err != nil && err != sql.ErrNoRows {
 			return err
 		}
-		if at <= lastAt {
+		var previousObservation Observation
+		if previousRaw != "" {
+			if err = json.Unmarshal([]byte(previousRaw), &previousObservation); err != nil {
+				return err
+			}
+		}
+		if assessmentAt(at, o) <= assessmentAt(lastAt, previousObservation) {
 			continue
 		}
 		judged := o
@@ -165,6 +171,17 @@ func (s *Store) Ingest(agent string, b Batch, now time.Time) error {
 	}
 	return tx.Commit()
 }
+
+// Ordering uses assessment time for passive control deltas, while observed and
+// expires remain anchored to the OLDEST possible message time. No schema change:
+// old JSON without checkedAgeSeconds keeps its original observed-time ordering.
+func assessmentAt(observed int64, o Observation) int64 {
+	if o.AgeSeconds != nil && o.CheckedAgeSeconds != nil && finiteRange(*o.AgeSeconds, 0, 7776000) && finiteRange(*o.CheckedAgeSeconds, 0, *o.AgeSeconds) {
+		return observed + int64((*o.AgeSeconds-*o.CheckedAgeSeconds)*1000)
+	}
+	return observed
+}
+
 func boolInt(v bool) int {
 	if v {
 		return 1
@@ -337,6 +354,9 @@ func (s *Store) Snapshot(now time.Time) (Snapshot, error) {
 			entry.ObservedAt = &stamp
 			entry.ObservedAgeSeconds = number(max(0, float64(now.UnixMilli()-at)/1000))
 			entry.Summary = summaries[o.Code]
+			if validEvidence(o.Evidence) {
+				entry.Evidence = o.Evidence
+			}
 			if now.UnixMilli() >= expires || c.Stale {
 				if entry.Status != "untested" {
 					entry.Status = "unknown"

@@ -58,6 +58,9 @@ func Probe(ctx context.Context, c Check) status.Observation {
 	result := status.Observation{Status: "down", Code: "probe_error", PathMode: "unknown"}
 	began := time.Now()
 	switch c.Kind {
+	case "control-stream":
+		// Counter history is deliberately scoped to an Agent, never a global cache.
+		return unknown("control_wait")
 	case "icmp4", "icmp6":
 		return icmpProbe(ctx, c)
 	case "unit", "job":

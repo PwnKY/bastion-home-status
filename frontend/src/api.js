@@ -3,6 +3,11 @@ import { BASE_SERVICES } from './data.js';
 const statuses = new Set(['healthy', 'degraded', 'down', 'unknown', 'untested', 'maintenance']);
 const optionalNumber = (value, max) => value == null || (Number.isFinite(value) && value >= 0 && value <= max);
 const text = (value, max = 300) => typeof value === 'string' && value.length <= max;
+const evidenceKinds = new Set(['job_success', 'job_failure', 'peer_success', 'peer_failure', 'control_message']);
+const validEvidence = (value) => value == null || (typeof value === 'object' && !Array.isArray(value)
+  && evidenceKinds.has(value.kind) && text(value.at, 40) && Number.isFinite(Date.parse(value.at))
+  && new Date(value.at).getUTCFullYear() >= 2000 && new Date(value.at).getUTCFullYear() <= 2100
+  && typeof value.historical === 'boolean' && Object.keys(value).every((key) => ['kind', 'at', 'historical'].includes(key)));
 const validPoint = (point) => point && statuses.has(point.status) && Number.isFinite(Date.parse(point.at)) && optionalNumber(point.value, 120000);
 
 // A missing API gets an honest empty shell, never synthetic health/history.
@@ -35,7 +40,7 @@ export function validateSnapshot(value) {
   for (const entry of value.services) {
     if (!entry || typeof entry.id !== 'string' || !/^[a-zA-Z0-9_-]{1,96}$/.test(entry.id)
       || ids.has(entry.id) || !statuses.has(entry.status) || typeof entry.name !== 'string'
-      || !text(entry.subtitle) || !text(entry.scope) || !text(entry.summary) || !text(entry.probeLabel)
+      || !text(entry.subtitle) || !text(entry.scope) || !text(entry.summary) || !text(entry.probeLabel) || !validEvidence(entry.evidence)
       || !['network', 'access', 'application', 'monitoring'].includes(entry.group)
       || !optionalNumber(entry.latencyMs, 120000) || !optionalNumber(entry.observedAgeSeconds, 7776000)
       || !optionalNumber(entry.usagePercent, 100) || !optionalNumber(entry.readyConnections, 1000)

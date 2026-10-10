@@ -16,6 +16,15 @@ export function previewServices(services, limit = 8) {
     .slice(0, limit).map(({ entry }) => entry);
 }
 
+// Evidence is a source-clock reference. It never supplies status or current RTT.
+export function evidencePresentation(entry) {
+  const evidence = entry?.evidence;
+  const labels = { job_success: '任务完成', job_failure: '任务失败', peer_success: '节点探测成功', peer_failure: '节点探测失败', control_message: '控制消息增长' };
+  if (!evidence || !Object.hasOwn(labels, evidence.kind) || !Number.isFinite(Date.parse(evidence.at))) return null;
+  const referenceOnly = evidence.historical || entry.stale || !['healthy', 'degraded', 'down'].includes(entry.status);
+  return { label: labels[evidence.kind], at: evidence.at, qualifier: referenceOnly ? '仅作参考' : '来源记录' };
+}
+
 export function exitBaseline(services, family) {
   // Explicit scope choice, never a success-based fallback or history substitution.
   const ping = services.find((entry) => entry.id === `${family}-icmp`);

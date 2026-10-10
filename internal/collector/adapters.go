@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -23,11 +24,18 @@ import (
 var unitName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.@:-]{0,150}\.(service|timer|mount)$`)
 
 func validateAdapter(c Check) error {
+	if c.JournalHistory && c.Kind != "job" {
+		return errors.New("journal history is only supported for jobs")
+	}
 	switch c.Kind {
 	case "http", "tailscale", "tunnel", "dns", "disk", "untested":
 	case "unit", "job":
 		if !unitName.MatchString(c.Unit) {
 			return errors.New("invalid read-only unit")
+		}
+	case "control-stream":
+		if !unitName.MatchString(c.Unit) || c.URL != "" || c.MetricURL != "" || c.Socket != "" || c.Target != "" || c.ProxyURL != "" || c.Network != "" || c.ConnectIP != "" || c.MaxAgeSeconds < 20 || c.MaxAgeSeconds > 180 {
+			return errors.New("invalid passive control configuration")
 		}
 	case "icmp4", "icmp6":
 		if _, err := icmpCheckTarget(c); err != nil || c.URL != "" || c.ProxyURL != "" || c.Socket != "" || c.Network != "" || c.ConnectIP != "" {
@@ -95,12 +103,22 @@ func unitProbe(ctx context.Context, c Check) status.Observation {
 	if !unitName.MatchString(c.Unit) {
 		return unknown("probe_error")
 	}
-	raw, err := readCommand(ctx, "systemctl", "show", "--no-pager", c.Unit, "--property=LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestampMonotonic")
+	raw, err := readCommand(ctx, "systemctl", "show", "--no-pager", c.Unit, "--property=LoadState,ActiveState,SubState,Type,Result,ExecMainStatus,ExecMainExitTimestampMonotonic")
 	if err != nil {
 		return unknown("probe_error")
 	}
-	_, uptime := clock()
-	return unitResult(raw, c, uptime)
+	boot, uptime := clock()
+	o := unitResult(raw, c, uptime)
+	if c.Kind == "job" && c.JournalHistory && (o.Code == "job_no_record" || o.Status == "healthy" || o.Code == "job_overdue" || o.Code == "task_failed") && strings.Contains(string(raw)+"\n", "Type=oneshot\n") {
+		record := jobJournalProbe(ctx, c, boot, o)
+		if o.Code == "job_no_record" {
+			return record
+		}
+		// Keep current unit semantics; attach only the real journal timestamp,
+		// never a shifting estimate from wall time minus uptime.
+		o.Evidence = record.Evidence
+	}
+	return o
 }
 func unitResult(raw []byte, c Check, uptime float64) status.Observation {
 	p := map[string]string{}
@@ -131,8 +149,8 @@ func unitResult(raw []byte, c Check, uptime float64) status.Observation {
 		return status.Observation{Status: "down", Code: "task_failed"}
 	}
 	stamp, err := strconv.ParseFloat(p["ExecMainExitTimestampMonotonic"], 64)
-	if err != nil || stamp <= 0 || stamp/1e6 > uptime {
-		return unknown("probe_error")
+	if err != nil || math.IsNaN(stamp) || math.IsInf(stamp, 0) || stamp <= 0 || stamp/1e6 > uptime || uptime <= 0 || math.IsNaN(uptime) || math.IsInf(uptime, 0) {
+		return unknown("job_no_record")
 	}
 	maxAge := c.MaxAgeSeconds
 	if maxAge == 0 {
@@ -246,13 +264,26 @@ func peerResult(raw []byte, c Check, now time.Time) status.Observation {
 	count, failed := 0, 0
 	direct, relay := false, false
 	at := time.Time{}
+	latest := time.Time{}
+	var lastEvidence *status.Evidence
 	fingerprints := []string{}
 	for key, p := range s.Peers {
 		if !p.Present || !p.Online || p.OK == nil {
 			continue
 		}
 		stamp, err := time.Parse(time.RFC3339Nano, p.At)
-		if err != nil || stamp.After(now) || now.Sub(stamp) >= time.Duration(maxAge)*time.Second {
+		if err != nil || stamp.After(now) || stamp.Year() < 2000 || stamp.Year() > 2100 {
+			continue
+		}
+		if stamp.After(latest) || (stamp.Equal(latest) && !*p.OK) {
+			latest = stamp
+			kind := "peer_failure"
+			if *p.OK {
+				kind = "peer_success"
+			}
+			lastEvidence = &status.Evidence{Kind: kind, At: stamp.UTC().Format(time.RFC3339Nano), Historical: now.Sub(stamp) >= time.Duration(maxAge)*time.Second}
+		}
+		if now.Sub(stamp) >= time.Duration(maxAge)*time.Second {
 			continue
 		}
 		count++
@@ -271,9 +302,12 @@ func peerResult(raw []byte, c Check, now time.Time) status.Observation {
 		fingerprints = append(fingerprints, key+"|"+p.At+"|"+strconv.FormatBool(*p.OK)+"|"+p.Path)
 	}
 	if count == 0 {
-		return unknown("stale")
+		o := unknown("peer_no_evidence")
+		o.Evidence = lastEvidence
+		return o
 	}
 	o := healthy()
+	o.Evidence = lastEvidence
 	if failed > 0 {
 		o.Status = "degraded"
 		o.Code = "path_failed"

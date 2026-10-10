@@ -85,12 +85,12 @@ export const BASE_SERVICES = [
   },
   {
     id: 'headscale-control',
-    name: 'Headscale 家庭控制连接',
-    subtitle: '家庭侧控制连接与同步证据',
+    name: '近期控制通信',
+    subtitle: '家庭侧控制消息增量观测',
     group: 'access',
     entity: 'family',
-    scope: '远程接入 / 控制层',
-    limits: ['控制连接异常不直接判 Tailscale 全部链路中断', '需结合同步与数据层证据'],
+    scope: '远程接入 / 控制消息',
+    limits: ['仅证明近期控制通信，不证明路由或访问策略完全同步', '与节点数据层证据分开判断'],
   },
   {
     id: 'tailscale-path',

@@ -56,6 +56,8 @@
 - `status`：`healthy / degraded / down / unknown / untested / maintenance`。
 - `code` 为固定枚举，对应通用摘要；不允许传入任意错误字符串。
 - `latencyMs` 可为 null。`readyConnections`、`usagePercent` 为可选有界数值。
+- 可选 `evidence` 只有 `kind`、`at`、`historical`：种类限 `job_success / job_failure / peer_success / peer_failure / control_message`；时间为有界 RFC3339 来源记录，历史标志为布尔值。它是参考元数据，不能提供当前路径/RTT、把未知变健康或改变有效期；不含原始日志、节点身份、地址和控制计数。
+- 仅 `control_fresh/control_warning` 允许可选 `checkedAgeSeconds`：判定读取年龄必须有限、非负且不大于证据 `ageSeconds`。消息增量的最早可能发生时间用于 `observed/expires`；判定时间用于新旧 current 排序。不能让上一轮未知因读取较晚而挡住新判定，也不能给旧消息续期。其他检测保留原有排序；无须改变 SQLite 表结构。队列同 boot 内同时累加两种年龄，跨 boot 不可定位时两者置空且只允许 replay。
 - `pathMode`：`unknown / direct / relay / mixed`，不能根据一般健康状态猜测。配置中的 HTTP `network=tcp4/tcp6` 限定地址族，`connectIp` 可绕过系统解析而保留原 TLS 主机名；不能与代理/Unix socket 混用。
 - 实时年龄必须为非负有限数字；后端用接收时间减年龄，不使用 `capturedAt` 判定新鲜度。
 - 采集器同一 Linux kernel boot 内利用 uptime 重建缓存年龄，容忍墙钟偏差；重启后不能可靠推算年龄的补传使用 null，仅保留私有证据，不绘入时间线。
@@ -72,7 +74,8 @@
 6. 历史为半小时窗口端点的抽样，不是全时段 SLA。上线前无记录的点保持未知。实时历史结合源心跳，不能让长 TTL 探针涂绿失联期间；可定位的补传补历史，不改当前。
 7. available 分母只包含 healthy/degraded/down；未知、未测、维护排除；覆盖率单独给出。少量有效点得到 100% 不等于覆盖整个窗口。
 8. 状态摘要带 `version=1`、`source=live`、`synthetic=false`、`serverTime`、`collectors[]`、服务、事件。兼容 `collector` 为第一个家庭源，仅供旧概览卡使用。
-9. API 不缓存到浏览器；后端有最多 2 秒的共享计算缓存，并在认证写入后失效。前端在轮询间隔内继续以服务器基准 + 单调计时撤销过期结果。
+9. 旧 agent/已存 JSON 可不含 `evidence/checkedAgeSeconds`，新前端兼容缺省；启用新字段前必须先升级会拒绝额外字段的旧后端。失联/过期仍保留只作参考的来源证据，撤销当前测量。此前启动的任务完成记录若无法验证墙钟年龄，仍为未知，不冒充当前完成或恢复。
+10. API 不缓存到浏览器；后端有最多 2 秒的共享计算缓存，并在认证写入后失效。前端在轮询间隔内继续以服务器基准 + 单调计时撤销过期结果。
 
 ## 保留
 

@@ -63,12 +63,14 @@ type Check struct {
 	ResourceType      string  `json:"resourceType,omitempty"`
 	MaxAgeSeconds     int     `json:"maxAgeSeconds,omitempty"`
 	CAFile            string  `json:"caFile,omitempty"`
+	JournalHistory    bool    `json:"journalHistory,omitempty"`
 }
 type Agent struct {
-	Config Config
-	client *http.Client
-	token  string
-	next   map[string]time.Time
+	Config  Config
+	client  *http.Client
+	token   string
+	next    map[string]time.Time
+	control controlTracker
 }
 type Queued struct {
 	Batch  status.Batch `json:"batch"`
@@ -221,7 +223,11 @@ func (a *Agent) Collect(ctx context.Context) Queued {
 				return
 			}
 			defer func() { <-budget }()
-			samples[i] = Probe(ctx, c)
+			if c.Kind == "control-stream" {
+				samples[i] = a.control.probe(ctx, c)
+			} else {
+				samples[i] = Probe(ctx, c)
+			}
 			times[i] = time.Now()
 			if samples[i].ID == "" {
 				samples[i].ID = ID()
@@ -239,7 +245,12 @@ func (a *Agent) Collect(ctx context.Context) Queued {
 		if o.ID == "" {
 			continue
 		}
-		age := finished.Sub(times[i]).Seconds()
+		elapsed := finished.Sub(times[i]).Seconds()
+		age := elapsed
+		if o.CheckedAgeSeconds != nil {
+			checkedAge := *o.CheckedAgeSeconds + elapsed
+			o.CheckedAgeSeconds = &checkedAge
+		}
 		if o.AgeSeconds != nil {
 			age += *o.AgeSeconds
 		}
@@ -258,8 +269,13 @@ func (q Queued) ForSend(replay bool) status.Batch {
 		if boot != "" && boot == q.BootID && uptime >= q.Uptime && q.Batch.Samples[i].AgeSeconds != nil {
 			age := *q.Batch.Samples[i].AgeSeconds + uptime - q.Uptime
 			batch.Samples[i].AgeSeconds = &age
+			if q.Batch.Samples[i].CheckedAgeSeconds != nil {
+				checkedAge := *q.Batch.Samples[i].CheckedAgeSeconds + uptime - q.Uptime
+				batch.Samples[i].CheckedAgeSeconds = &checkedAge
+			}
 		} else {
 			batch.Samples[i].AgeSeconds = nil
+			batch.Samples[i].CheckedAgeSeconds = nil
 		}
 	}
 	return batch

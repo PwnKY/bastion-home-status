@@ -95,7 +95,17 @@ try {
   await evaluate("document.querySelector('[data-service=ipv4]').focus()"); await refresh();
   check('快照刷新后服务按钮键盘焦点保留', await evaluate("document.activeElement.dataset.focus==='service-ipv4'"));
   check('连接数显示上报的 2 条，不硬编码 4', await evaluate("document.querySelector('.path-observations [data-service=tunnel-ready]').textContent.includes('2 条就绪连接')"));
-  check('没有路径证据时不冒充直连或中继', await evaluate("document.querySelector('.path-observations [data-service=tailscale-path]').textContent.includes('尚无端到端路径证据')"));
+  check('没有路径证据时不冒充直连或中继，也不把未知标签涂绿', await evaluate("document.querySelector('.path-observations [data-service=tailscale-path]').textContent.includes('暂无新鲜节点探测') && document.querySelector('.path-observations [data-service=tailscale-path] .status-badge').classList.contains('unknown')"));
+  const oldRecord = new Date(Date.now() - 2 * 3600000).toISOString();
+  await sample('tailscale-path', 'unknown', { code: 'peer_no_evidence', pathMode: 'unknown', latencyMs: null, evidence: { kind: 'peer_success', at: oldRecord, historical: true } });
+  await sample('resource-fixture-0', 'unknown', { code: 'job_previous_boot', latencyMs: null, evidence: { kind: 'job_success', at: oldRecord, historical: true } });
+  await sample('headscale-control', 'healthy', { code: 'control_fresh', latencyMs: null, ageSeconds: 10, checkedAgeSeconds: 0, evidence: { kind: 'control_message', at: new Date(Date.now()-10000).toISOString(), historical: false } });
+  await refresh();
+  check('旧节点成功记录仅作参考，当前路径和 RTT 仍未知', await evaluate("document.querySelector('.path-observations [data-service=tailscale-path]').textContent.includes('仅作参考') && document.querySelector('.service-row[data-service=tailscale-path] .service-latency').textContent==='—' && document.querySelector('.path-observations [data-service=tailscale-path] .status-badge').textContent==='未知'"));
+  check('控制文案仅证明近期通信，不再声称本轮已同步', await evaluate("document.querySelector('.path-observations [data-service=headscale-control]').textContent.includes('近期有控制消息；不等于完全同步') && !document.querySelector('.path-panel').textContent.includes('本轮已同步')"));
+  await click('.service-row[data-service=resource-fixture-0]');
+  check('跨启动完成记录仍未知，详情区分观测与来源时间', await evaluate("document.querySelector('dialog .status-badge').textContent==='未知' && document.querySelector('dialog').textContent.includes('来源证据时间') && document.querySelector('dialog').textContent.includes('任务完成 · 仅作参考') && document.querySelector('dialog').textContent.includes('源主机时钟记录，不用于计算当前新鲜度')"));
+  await click('[data-action=close-dialog]');
   await click('[data-service=ipv4]');
   check('详情标注真实 API 测量范围与稀疏覆盖', await evaluate("document.querySelector('dialog').textContent.includes('分母：1 个已测样本') && document.querySelector('dialog').textContent.includes('真实观测')"));
   await refresh();
@@ -127,6 +137,7 @@ try {
   await retry(async () => assert.equal(await evaluate("document.querySelector('.demo-badge').textContent"), '接口不可达'));
   check('后端不可达时撤销当前延迟，不恢复演示绿灯', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='未知' && document.querySelector('[data-service=ipv4] .service-latency').textContent==='—' && !document.querySelector('[data-control=scenario]')"));
   check('已打开详情同步变未知，历史保留', await evaluate("document.querySelector('dialog .status-badge').textContent==='未知' && document.querySelector('dialog').textContent.includes('历史上报延迟')"));
+  check('API 失联保留旧节点来源记录，不补造新路径', await evaluate("document.querySelector('.path-observations [data-service=tailscale-path]').textContent.includes('仅作参考') && document.querySelector('.path-observations [data-service=tailscale-path] .status-badge').classList.contains('unknown')"));
   await click('[data-action=close-dialog]');
   backend = spawn(binary, ['-config', configFile], { cwd: temp, stdio: 'pipe' });
   await retry(async () => assert.equal((await fetch(`${backendOrigin}/healthz`)).status, 200));
