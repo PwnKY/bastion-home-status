@@ -76,6 +76,8 @@ type fakePingConn struct {
 	deadline time.Time
 	readErr  error
 	foreign  bool
+	peerIP   net.IP
+	sentTo   net.Addr
 }
 
 func (f *fakePingConn) ReadFrom(b []byte) (int, net.Addr, error) {
@@ -88,18 +90,27 @@ func (f *fakePingConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	if f.closed {
 		return 0, nil, net.ErrClosed
 	}
+	peerIP := f.peerIP
+	if peerIP == nil {
+		peerIP = net.ParseIP("2001:db8::1")
+	}
 	raw := append([]byte{}, f.request...)
-	raw[0] = 129
+	if peerIP.To4() != nil {
+		raw[0] = 0
+	} else {
+		raw[0] = 129
+	}
 	if f.foreign {
 		raw[len(raw)-1] ^= 1
 	}
-	return copy(b, raw), &net.UDPAddr{IP: net.ParseIP("2001:db8::1")}, nil
+	return copy(b, raw), &net.UDPAddr{IP: peerIP}, nil
 }
-func (f *fakePingConn) WriteTo(b []byte, _ net.Addr) (int, error) {
+func (f *fakePingConn) WriteTo(b []byte, peer net.Addr) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.request = append([]byte{}, b...)
 	f.writes++
+	f.sentTo = peer
 	return len(b), nil
 }
 func (f *fakePingConn) Close() error {

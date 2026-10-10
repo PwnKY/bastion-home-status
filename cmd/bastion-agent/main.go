@@ -17,10 +17,18 @@ import (
 func main() {
 	path := flag.String("config", "", "private collector configuration file")
 	icmpTarget := flag.String("probe-icmp6", "", "one bounded public IPv6 Echo preflight; no config, credential or queue access")
+	icmp4Target := flag.String("probe-icmp4", "", "one bounded RFC1918 IPv4 Echo preflight; no config, credential or queue access")
 	flag.Parse()
-	if *icmpTarget != "" {
+	if *icmpTarget != "" && *icmp4Target != "" {
+		log.Fatal("choose only one ICMP preflight family")
+	}
+	if *icmpTarget != "" || *icmp4Target != "" {
+		check := collector.Check{Kind: "icmp6", Target: *icmpTarget}
+		if *icmp4Target != "" {
+			check = collector.Check{Kind: "icmp4", Target: *icmp4Target}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		result := collector.Probe(ctx, collector.Check{Kind: "icmp6", Target: *icmpTarget})
+		result := collector.Probe(ctx, check)
 		cancel()
 		if json.NewEncoder(os.Stdout).Encode(result) != nil || result.Status != "healthy" {
 			os.Exit(1)

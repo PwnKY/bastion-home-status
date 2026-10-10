@@ -29,9 +29,9 @@ func validateAdapter(c Check) error {
 		if !unitName.MatchString(c.Unit) {
 			return errors.New("invalid read-only unit")
 		}
-	case "icmp6":
-		if _, err := icmpTarget(c.Target); err != nil || c.URL != "" || c.ProxyURL != "" || c.Socket != "" || c.Network != "" || c.ConnectIP != "" {
-			return errors.New("invalid IPv6 ICMP configuration")
+	case "icmp4", "icmp6":
+		if _, err := icmpCheckTarget(c); err != nil || c.URL != "" || c.ProxyURL != "" || c.Socket != "" || c.Network != "" || c.ConnectIP != "" {
+			return errors.New("invalid ICMP configuration")
 		}
 	case "tcp":
 		host, port, err := net.SplitHostPort(c.Target)

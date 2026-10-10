@@ -13,6 +13,7 @@ import (
 
 	"github.com/PwnKY/bastion-home-status/internal/status"
 	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
 
@@ -26,12 +27,43 @@ func icmpTarget(target string) (netip.Addr, error) {
 	return ip, nil
 }
 
+// IPv4 is deliberately limited to explicit RFC1918 LAN targets. In particular,
+// CGNAT/Tailscale peer addresses, public targets, loopback and link-local are rejected.
+func icmp4Target(target string) (netip.Addr, error) {
+	ip, err := netip.ParseAddr(target)
+	if err != nil || !ip.Is4() || ip.Zone() != "" || !ip.IsGlobalUnicast() || !ip.IsPrivate() {
+		return netip.Addr{}, errors.New("invalid private IPv4 ICMP target")
+	}
+	return ip, nil
+}
+
+func icmpCheckTarget(c Check) (netip.Addr, error) {
+	switch c.Kind {
+	case "icmp4":
+		return icmp4Target(c.Target)
+	case "icmp6":
+		return icmpTarget(c.Target)
+	default:
+		return netip.Addr{}, errors.New("invalid ICMP family")
+	}
+}
+
+func icmpFamily(ip netip.Addr) (int, icmp.Type, icmp.Type) {
+	if ip.Is4() {
+		return 1, ipv4.ICMPTypeEcho, ipv4.ICMPTypeEchoReply
+	}
+	return 58, ipv6.ICMPTypeEchoRequest, ipv6.ICMPTypeEchoReply
+}
+
 func icmpProbe(ctx context.Context, c Check) status.Observation {
+	if c.Kind == "icmp4" {
+		return icmpProbeWith(ctx, c, openICMP4Socket)
+	}
 	return icmpProbeWith(ctx, c, openICMPSocket)
 }
 
 func icmpProbeWith(ctx context.Context, c Check, open func() (net.PacketConn, error)) status.Observation {
-	ip, err := icmpTarget(c.Target)
+	ip, err := icmpCheckTarget(c)
 	if err != nil || ctx.Err() != nil {
 		return unknown("probe_error")
 	}
@@ -60,7 +92,8 @@ func icmpProbeWith(ctx context.Context, c Check, open func() (net.PacketConn, er
 		return unknown("probe_error")
 	}
 	seq := int(payload[0])<<8 | int(payload[1])
-	request, err := (&icmp.Message{Type: ipv6.ICMPTypeEchoRequest, Code: 0, Body: &icmp.Echo{ID: local.Port, Seq: seq, Data: payload}}).Marshal(nil)
+	_, requestType, _ := icmpFamily(ip)
+	request, err := (&icmp.Message{Type: requestType, Code: 0, Body: &icmp.Echo{ID: local.Port, Seq: seq, Data: payload}}).Marshal(nil)
 	if err != nil {
 		return unknown("probe_error")
 	}
@@ -107,8 +140,9 @@ func echoMatches(raw []byte, peer net.Addr, target netip.Addr, id, seq int, payl
 	if !ok || !addr.IP.Equal(net.IP(target.AsSlice())) || addr.Zone != "" {
 		return false
 	}
-	message, err := icmp.ParseMessage(58, raw)
-	if err != nil || message.Type != ipv6.ICMPTypeEchoReply || message.Code != 0 {
+	protocol, _, replyType := icmpFamily(target)
+	message, err := icmp.ParseMessage(protocol, raw)
+	if err != nil || message.Type != replyType || message.Code != 0 {
 		return false
 	}
 	echo, ok := message.Body.(*icmp.Echo)
