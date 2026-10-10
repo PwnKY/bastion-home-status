@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { filterServices, previewServices, latencyParts } from '../src/presentation.js';
+import { filterServices, previewServices, latencyParts, exitBaseline } from '../src/presentation.js';
 
 const entries = Array.from({ length: 60 }, (_, i) => ({ id: `fixture-${i}`, name: `观测 ${i}`, subtitle: '只读测试夹具', group: i % 2 ? 'access' : 'network', status: 'healthy' }));
 
@@ -28,6 +28,14 @@ test('bounded overview prioritizes failures without changing any conclusion or i
 test('overview safely handles empty and smaller lists, keeping equal-status order', () => {
   assert.deepEqual(previewServices([]), []);
   assert.deepEqual(previewServices(entries.slice(0, 3)), entries.slice(0, 3));
+});
+
+test('ICMP baseline is a distinct scope, never falls back to DNS on failure', () => {
+  const list = [{ id: 'ipv6-baseline', status: 'healthy' }, { id: 'ipv6-icmp', status: 'down', latencyMs: null }];
+  assert.deepEqual(exitBaseline(list, 'ipv6'), { id: 'ipv6-icmp', label: 'ICMP Ping 基准' });
+  assert.deepEqual(exitBaseline(list, 'ipv4'), { id: 'ipv4-baseline', label: '国内 DNS 基准' });
+  assert.deepEqual(exitBaseline(list.slice(0, 1), 'ipv6'), { id: 'ipv6-baseline', label: '国内 DNS 基准' });
+  assert.deepEqual(exitBaseline([], 'ipv6'), { id: 'ipv6-baseline', label: '国内 DNS 基准' });
 });
 
 test('measurements are compact, carry units, and never invent a missing result', () => {

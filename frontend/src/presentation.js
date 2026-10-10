@@ -16,6 +16,12 @@ export function previewServices(services, limit = 8) {
     .slice(0, limit).map(({ entry }) => entry);
 }
 
+export function exitBaseline(services, family) {
+  // Explicit scope choice, never a success-based fallback or history substitution.
+  const ping = services.find((entry) => entry.id === `${family}-icmp`);
+  return ping ? { id: ping.id, label: 'ICMP Ping 基准' } : { id: `${family}-baseline`, label: '国内 DNS 基准' };
+}
+
 export function latencyParts(value) {
   const formatted = formatLatency(value);
   if (formatted === '—') return { value: '—', unit: '暂无新鲜结果' };

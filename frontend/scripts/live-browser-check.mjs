@@ -26,6 +26,7 @@ const agentTokens = [token, ...Array.from({ length: 7 }, () => randomBytes(32).t
 const expandedServices = [...BASE_SERVICES,
   { id: 'ipv4-baseline', name: 'IPv4 DNS 查询夹具', group: 'network' },
   { id: 'ipv6-baseline', name: 'IPv6 DNS 查询夹具', group: 'network' },
+  { id: 'ipv6-icmp', name: 'IPv6 ICMP Echo 夹具', group: 'network' },
   ...Array.from({ length: 46 }, (_, index) => ({ id: `resource-fixture-${index}`, name: `较长的只读资源观测名称 ${index + 1}`, group: index % 2 ? 'monitoring' : 'network' })),
 ];
 const secretFile = path.join(temp, 'credential');
@@ -74,11 +75,16 @@ try {
   await sample('home-app', 'untested', { code: 'untested', latencyMs: null });
   await refresh();
   check('认证上报经 SQLite 后真实显示测量值', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='正常' && document.querySelector('[data-service=ipv4] .service-latency').textContent==='18 ms'"));
-  check('60 项观测总览最多 8 行，完整来源默认折叠', await evaluate("document.querySelectorAll('.service-row').length===8 && !document.querySelector('[data-collectors]').open && document.querySelector('.collector-tally').textContent.includes('8 / 8')"));
-  check('IPv4/IPv6 DNS 与 HTTPS 四项测量独立显示', await evaluate("document.querySelectorAll('.exit-probe').length===4 && document.querySelector('.exit-measurements').textContent.includes('不是 ping') && document.querySelector('.stat-label').textContent.includes('当前概况')"));
+  check('61 项观测总览最多 8 行，完整来源默认折叠', await evaluate("document.querySelectorAll('.service-row').length===8 && !document.querySelector('[data-collectors]').open && document.querySelector('.collector-tally').textContent.includes('8 / 8')"));
+  check('IPv4 DNS、IPv6 ICMP 和 HTTPS 四项测量独立显示', await evaluate("document.querySelectorAll('.exit-probe').length===4 && document.querySelector('.exit-measurements').textContent.includes('ICMP Ping 基准') && document.querySelector('.exit-measurements').textContent.includes('Ping 不代表 DNS') && document.querySelector('.stat-label').textContent.includes('当前概况')"));
   for (let i = 0; i < 3; i++) await sample('ipv6-baseline', 'down', { code: 'dns_error' });
   await refresh();
-  check('DNS 基准失败不误判独立 IPv6 HTTPS，缺失测量不冒充旧值', await evaluate("document.querySelector('[data-timing-service=ipv6-baseline] .status-badge').textContent==='故障' && document.querySelector('[data-timing-service=ipv6-baseline] .exit-probe-value').textContent==='—' && document.querySelector('[data-timing-service=ipv6] .status-badge').textContent==='正常'"));
+  check('DNS 故障保留，不传播到独立 ICMP/HTTPS 观测', await evaluate("document.querySelector('[data-service=ipv6-baseline] .status-badge').textContent==='故障' && document.querySelector('[data-timing-service=ipv6-icmp] .status-badge').textContent==='正常' && document.querySelector('[data-timing-service=ipv6] .status-badge').textContent==='正常'"));
+  for (let i = 0; i < 3; i++) await sample('ipv6-icmp', 'down', { code: 'icmp_error' });
+  await refresh();
+  check('ICMP 超时撤销 RTT，不切换到 DNS 或撤销 HTTPS 结论', await evaluate("document.querySelector('[data-timing-service=ipv6-icmp] .status-badge').textContent==='故障' && document.querySelector('[data-timing-service=ipv6-icmp] .exit-probe-value').textContent==='—' && !document.querySelector('[data-timing-service=ipv6-baseline]') && document.querySelector('[data-timing-service=ipv6] .status-badge').textContent==='正常'"));
+  await sample('ipv6-icmp'); await sample('ipv6-icmp'); await refresh();
+  check('ICMP 两次成功后恢复，旧 DNS 故障独立保留', await evaluate("document.querySelector('[data-timing-service=ipv6-icmp] .status-badge').textContent==='正常' && document.querySelector('[data-service=ipv6-baseline] .status-badge').textContent==='故障'"));
   check('概况故障计数清晰且需关注项置顶', await evaluate("document.querySelector('.stat-foot').textContent.includes('1 故障') && document.querySelector('.service-row').dataset.service==='ipv6-baseline'"));
   await click('[data-quick-status=down]');
   check('关注项快捷入口进入完整列表并应用故障筛选', await evaluate("location.hash==='#services' && document.querySelector('[data-control=status]').value==='down' && document.querySelectorAll('.service-row').length===1"));
@@ -120,8 +126,8 @@ try {
   check('后端重启后读取原 SQLite，不丢状态与事件', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='正常' && document.querySelectorAll('.incident').length>0"));
   for (const width of [1440, 1024, 768, 390, 320]) {
     await command('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 });
-    for (const page of ['overview', 'services', 'paths', 'events']) { await evaluate(`location.hash=${JSON.stringify(page)}`); await wait(80); check(`${width}px ${page} 60项真实接口模式无横向溢出`, await evaluate('document.documentElement.scrollWidth<=innerWidth+1')); }
-    if (width === 390) { await evaluate("location.hash='services'"); await wait(80); check('完整列表保持 60 项、长名称与筛选计数可读', await evaluate("document.querySelectorAll('.service-row').length===60 && document.querySelector('.service-result-count').textContent.includes('60 项匹配')")); }
+    for (const page of ['overview', 'services', 'paths', 'events']) { await evaluate(`location.hash=${JSON.stringify(page)}`); await wait(80); check(`${width}px ${page} 61项真实接口模式无横向溢出`, await evaluate('document.documentElement.scrollWidth<=innerWidth+1')); }
+    if (width === 390) { await evaluate("location.hash='services'"); await wait(80); check('完整列表保持 61 项、长名称与筛选计数可读', await evaluate("document.querySelectorAll('.service-row').length===61 && document.querySelector('.service-result-count').textContent.includes('61 项匹配')")); }
   }
   check('无 JavaScript 运行错误', errors.length === 0);
   check('浏览器不保存采集凭据，也不连接设备地址', !(await evaluate('document.documentElement.outerHTML')).includes(token) && await evaluate('localStorage.length===0 && sessionStorage.length===0') && [...urls].every((url) => url.startsWith(origin) || url.startsWith('data:')));

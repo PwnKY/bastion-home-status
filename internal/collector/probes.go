@@ -58,6 +58,8 @@ func Probe(ctx context.Context, c Check) status.Observation {
 	result := status.Observation{Status: "down", Code: "probe_error", PathMode: "unknown"}
 	began := time.Now()
 	switch c.Kind {
+	case "icmp6":
+		return icmpProbe(ctx, c)
 	case "unit", "job":
 		return unitProbe(ctx, c)
 	case "pve":

@@ -43,6 +43,7 @@ var summaries = map[string]string{
 	"untested": "尚未执行此范围的业务验证。", "stale": "没有新鲜观测；未知不代表服务故障。",
 	"process_failed": "指定进程或服务未处于运行态。", "task_failed": "最近一次指定任务执行失败。",
 	"job_overdue": "指定任务缺少有效期内的成功记录。", "resource_stopped": "指定虚拟资源未处于运行态。",
+	"icmp_error": "指定 IPv6 ICMP Echo 未得到匹配应答；不代表 DNS 或业务故障。", "icmp_unavailable": "本机未能提供无需额外权限的 IPv6 ICMP 检测。",
 	"tcp_error": "指定 TCP 端口或协议握手未符合预期。", "path_failed": "既有节点探测中存在新鲜失败记录；不代表全部链路故障。",
 }
 

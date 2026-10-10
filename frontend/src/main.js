@@ -3,7 +3,7 @@ import { createDemoSnapshot, SCENARIOS } from './data.js';
 import { deriveView, formatLatency, getHistoryStats } from './model.js';
 import { createClock, emptyLiveSnapshot, fetchSnapshot, unavailableSnapshot } from './api.js';
 import { trendSegments } from './trend.js';
-import { filterServices, previewServices, latencyParts } from './presentation.js';
+import { filterServices, previewServices, latencyParts, exitBaseline } from './presentation.js';
 
 // Browsers read same-origin summaries only. Device interfaces and credentials stay private.
 const app = document.querySelector('#app');
@@ -54,7 +54,7 @@ const PATHS = {
   pause: '<path d="M9 5v14M15 5v14"/>',
   pulse: '<path d="M3 12h3l3-7 5 14 3-7h4"/>',
 };
-const SERVICE_ICONS = { gateway: 'server', dns: 'globe', ipv4: 'globe', ipv6: 'globe', 'ipv4-baseline': 'globe', 'ipv6-baseline': 'globe', proxy: 'route', 'headscale-base': 'shield', 'headscale-control': 'link', 'tailscale-path': 'route', 'derp-base': 'server', 'tunnel-ready': 'cloud', 'home-app': 'home', collectors: 'pulse' };
+const SERVICE_ICONS = { gateway: 'server', dns: 'globe', ipv4: 'globe', ipv6: 'globe', 'ipv4-baseline': 'globe', 'ipv6-baseline': 'globe', 'ipv6-icmp': 'activity', proxy: 'route', 'headscale-base': 'shield', 'headscale-control': 'link', 'tailscale-path': 'route', 'derp-base': 'server', 'tunnel-ready': 'cloud', 'home-app': 'home', collectors: 'pulse' };
 const e = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const icon = (name, extra = '') => `<svg class="icon ${extra}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PATHS[name] || PATHS.activity}</svg>`;
 const fmt = (value, options) => value && Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', ...options }).format(new Date(value)) : '—';
@@ -223,8 +223,9 @@ function attentionBar() {
   return `<section class="attention-bar" aria-label="观测关注项"><span class="attention-heading">${icon(confirmed ? 'alert' : 'info')}<strong>${confirmed ? `${confirmed} 项检测需要关注` : counts.unknown ? '部分观测缺少新鲜证据' : '已测范围内未发现异常'}</strong></span><div class="attention-actions">${['down', 'degraded', 'unknown'].filter((status) => counts[status] > 0).map((status) => `<button class="attention-chip ${status}" data-quick-status="${status}" data-focus="attention-${status}" aria-label="筛选${counts[status]}项${statusOf(status).label}观测">${counts[status]} ${statusOf(status).label}${icon('arrow')}</button>`).join('')}</div><span class="attention-note">未知 ≠ 故障 · ${counts.untested} 项未测</span></section>`;
 }
 function exitMeasurements() {
-  if (!view.services.some((entry) => ['ipv4-baseline', 'ipv6-baseline'].includes(entry.id))) return '';
-  return `<section class="exit-measurements" aria-label="IPv4 与 IPv6 独立测量"><div class="exit-heading"><h2>出口观测</h2><p>DNS 应答与网页请求分别测量，不是 ping，也不证明完整路由。</p></div><div class="exit-grid">${['ipv4', 'ipv6'].map((family) => `<article class="exit-family"><span class="exit-family-label mono">${family.toUpperCase()}</span><div class="exit-family-probes">${[{ id: `${family}-baseline`, label: '国内 DNS 基准' }, { id: family, label: 'HTTPS 请求' }].map(({ id, label }) => { const entry = service(id); return `<button class="exit-probe" data-timing-service="${id}" data-focus="timing-${id}" aria-label="查看${family.toUpperCase()} ${label}详情"><span class="exit-probe-heading">${label}${icon('diagonal')}</span><span class="exit-probe-value mono">${formatLatency(entry.latencyMs)}</span>${badge(entry.status)}</button>`; }).join('')}</div></article>`).join('')}</div></section>`;
+  if (!view.services.some((entry) => ['ipv4-baseline', 'ipv6-baseline', 'ipv6-icmp'].includes(entry.id))) return '';
+  const hasPing = view.services.some((entry) => entry.id === 'ipv6-icmp');
+  return `<section class="exit-measurements" aria-label="IPv4 与 IPv6 独立测量"><div class="exit-heading"><h2>出口观测</h2><p>${hasPing ? 'DNS、ICMP 与 HTTPS 独立测量；Ping 不代表 DNS 或业务成功。' : 'DNS 应答与网页请求分别测量，不是 ping，也不证明完整路由。'}</p></div><div class="exit-grid">${['ipv4', 'ipv6'].map((family) => `<article class="exit-family"><span class="exit-family-label mono">${family.toUpperCase()}</span><div class="exit-family-probes">${[exitBaseline(view.services, family), { id: family, label: 'HTTPS 请求' }].map(({ id, label }) => { const entry = service(id); return `<button class="exit-probe" data-timing-service="${id}" data-focus="timing-${id}" aria-label="查看${family.toUpperCase()} ${label}详情"><span class="exit-probe-heading">${label}${icon('diagonal')}</span><span class="exit-probe-value mono">${formatLatency(entry.latencyMs)}</span>${badge(entry.status)}</button>`; }).join('')}</div></article>`).join('')}</div></section>`;
 }
 function collectorSummary() {
   if (isDemo) return '';
