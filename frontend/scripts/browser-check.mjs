@@ -90,7 +90,7 @@ try {
   });
   await command('Page.enable'); await command('Runtime.enable'); await command('Network.enable'); await command('Log.enable');
   await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
-  await command('Page.navigate', { url: origin }); await wait(500);
+  await command('Page.navigate', { url: `${origin}/?demo=1` }); await wait(500);
   check('总览加载且始终标注演示模式', await evaluate("document.querySelector('h1').textContent.includes('连接') && document.querySelector('.demo-notice').textContent.includes('合成演示')"));
   check('黑色主题，无外部字体或资源', await evaluate("getComputedStyle(document.documentElement).backgroundColor === 'rgb(13, 15, 17)'"));
   check('桌面不显示手机导航按钮', await evaluate("getComputedStyle(document.querySelector('.mobile-menu')).display==='none'"));

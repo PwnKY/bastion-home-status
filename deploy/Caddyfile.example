@@ -1,0 +1,43 @@
+# Default is loopback preview, NOT anonymous public access.
+# Production needs a private environment file, stable address, DNS/TLS and an explicit access policy.
+{$SITE_ADDRESS:http://localhost:8080} {
+    bind {$SITE_BIND:127.0.0.1}
+    encode gzip zstd
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options DENY
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+    }
+    @ingest {
+        path /api/v1/ingest /api/v1/heartbeat
+        method POST
+    }
+    handle @ingest {
+        request_body {
+            max_size 256KB
+        }
+        reverse_proxy {$BACKEND_UPSTREAM:127.0.0.1:18080}
+    }
+    @read {
+        path /api/v1/status /api/v1/history /api/v1/incidents
+        method GET HEAD
+    }
+    handle @read {
+        header Cache-Control no-store
+        # Add independent browser access control here if summaries are not public.
+        reverse_proxy {$BACKEND_UPSTREAM:127.0.0.1:18080}
+    }
+    handle /api/* {
+        respond "Not found" 404
+    }
+    handle /healthz {
+        respond "Not found" 404
+    }
+    handle {
+        # Add the same browser access policy here if the page requires login.
+        root * /srv/bastion/frontend
+        try_files {path} /index.html
+        file_server
+    }
+}

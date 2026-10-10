@@ -1,6 +1,6 @@
 // 纯函数模型层：不依赖 DOM、不发起网络请求、不修改输入快照。
 // 该层负责“判定语义”：数据过期 => 未知、统计分母、可用率与降级比例、延迟格式化。
-// 全部为演示可用的纯逻辑，不构成对真实设备/业务的健康结论。
+// 后端负责真实判定；本层只做最终过期保护与展示统计，不扩大检测结论。
 
 export const EXCLUDED_FROM_UPTIME = ['unknown', 'untested', 'maintenance'];
 
@@ -111,12 +111,25 @@ export function deriveView(snapshot, now = Date.now()) {
       : 90;
   const staleMs = staleAfterSeconds * 1000;
 
+  const live = clone.source === 'live';
+  const elapsedMs = live ? Math.max(0, now - (toMillis(clone.serverTime) ?? now)) : 0;
+  const collectors = (clone.collectors ?? []).map((entry) => {
+    const ageMs = Number.isFinite(entry.heartbeatAgeSeconds)
+      ? entry.heartbeatAgeSeconds * 1000 + elapsedMs
+      : null;
+    return { ...entry, stale: clone.apiAvailable === false || ageMs === null || ageMs >= entry.staleAfterSeconds * 1000 };
+  });
   const services = (Array.isArray(clone.services) ? clone.services : []).map((service) => {
     const reportedStatus = service.status;
     const observedAtMs = toMillis(service.observedAt);
-    const observedAgeMs = observedAtMs === null ? null : Math.max(0, now - observedAtMs);
-    // 缺失/非法时间戳按“过期”处理，绝不能当作新鲜观测。
-    const stale = observedAgeMs === null || observedAgeMs >= staleMs;
+    const observedAgeMs = live && Number.isFinite(service.observedAgeSeconds)
+      ? service.observedAgeSeconds * 1000 + elapsedMs
+      : observedAtMs === null ? null : Math.max(0, now - observedAtMs);
+    const expiryMs = Number.isFinite(service.staleAfterSeconds) && service.staleAfterSeconds > 0
+      ? service.staleAfterSeconds * 1000 : staleMs;
+    const owner = collectors.find((entry) => entry.id === service.collectorId);
+    const future = live && observedAtMs !== null && observedAtMs > now + 5000;
+    const stale = clone.apiAvailable === false || future || owner?.stale === true || observedAgeMs === null || observedAgeMs >= expiryMs;
     // untested 从未被测过：时间戳变旧也不改写成未知，避免凭空“制造”一次测试结论。
     const status = stale && reportedStatus !== 'untested' ? 'unknown' : reportedStatus;
     return {
@@ -133,9 +146,11 @@ export function deriveView(snapshot, now = Date.now()) {
   });
 
   const lastHeartbeatMs = toMillis(collectorIn.lastHeartbeatAt);
-  const heartbeatAgeMs = lastHeartbeatMs === null ? null : Math.max(0, now - lastHeartbeatMs);
+  const heartbeatAgeMs = live && Number.isFinite(collectorIn.heartbeatAgeSeconds)
+    ? collectorIn.heartbeatAgeSeconds * 1000 + elapsedMs
+    : lastHeartbeatMs === null ? null : Math.max(0, now - lastHeartbeatMs);
   // 心跳缺失/非法同样视为过期，而不是默认新鲜。
-  const heartbeatStale = heartbeatAgeMs === null || heartbeatAgeMs >= staleMs;
+  const heartbeatStale = clone.apiAvailable === false || heartbeatAgeMs === null || heartbeatAgeMs >= staleMs;
 
   const statusCounts = STATUSES.reduce((acc, status) => {
     acc[status] = 0;
@@ -150,7 +165,7 @@ export function deriveView(snapshot, now = Date.now()) {
 
   const applicationServices = services.filter((service) => service.group === 'application');
   const businessTested = applicationServices.some(
-    (service) => service.status === 'healthy' || service.status === 'degraded' || service.status === 'down',
+    (service) => service.businessProbe === true && ['healthy', 'degraded', 'down'].includes(service.status),
   );
   const assessedServices = services.filter(
     (service) => !EXCLUDED_FROM_UPTIME.includes(service.status),
@@ -171,6 +186,7 @@ export function deriveView(snapshot, now = Date.now()) {
 
   return {
     ...clone,
+    collectors,
     collector: {
       ...collectorIn,
       lastHeartbeatAt: collectorIn.lastHeartbeatAt ?? null,

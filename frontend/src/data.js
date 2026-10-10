@@ -28,7 +28,7 @@ const DEMO_PROBE = {
   collector: '心跳监测（合成）',
 };
 
-const BASE_SERVICES = [
+export const BASE_SERVICES = [
   {
     id: 'gateway',
     name: '家庭网关',

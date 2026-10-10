@@ -1,0 +1,31 @@
+{
+  "listen": "127.0.0.1:18080",
+  "database": "/var/lib/bastion-server/status.sqlite",
+  "retentionDays": 30,
+  "agents": [
+    {"id":"home","label":"家庭侧汇总","kind":"family","secretHashFile":"/etc/bastion-server/home.sha256","intervalSeconds":30,"staleAfterSeconds":90},
+    {"id":"edge","label":"边缘侧采集","kind":"public","secretHashFile":"/etc/bastion-server/edge.sha256","intervalSeconds":30,"staleAfterSeconds":90},
+    {"id":"media","label":"媒体本机采集","kind":"family","secretHashFile":"/etc/bastion-server/media.sha256","intervalSeconds":30,"staleAfterSeconds":90},
+    {"id":"dns-local","label":"DNS 本机采集","kind":"family","secretHashFile":"/etc/bastion-server/dns-local.sha256","intervalSeconds":30,"staleAfterSeconds":90}
+  ],
+  "services": [
+    {"id":"gateway","name":"家庭网关","subtitle":"设备状态尚待接入","group":"network","collectorId":"home","scope":"未配置设备只读检查；不推断网关故障","staleAfterSeconds":90},
+    {"id":"dns","name":"DNS 解析","subtitle":"指定查询与应答语义","group":"network","collectorId":"home","scope":"家庭侧指定 DNS 查询；不代表全部规则正确","staleAfterSeconds":90},
+    {"id":"ipv4","name":"IPv4 出口","subtitle":"指定目标的 IPv4 请求","group":"network","collectorId":"home","scope":"地址族与请求对照；成功不证明真实直出路由","staleAfterSeconds":90},
+    {"id":"ipv6","name":"IPv6 出口","subtitle":"独立地址族请求","group":"network","collectorId":"home","scope":"独立于 IPv4；未配置时不作故障结论","staleAfterSeconds":90},
+    {"id":"proxy","name":"代理出口","subtitle":"明确配置的代理请求","group":"network","collectorId":"home","scope":"指定代理路径与目标；不代表所有节点可用","staleAfterSeconds":90},
+    {"id":"headscale-base","name":"Headscale 基础健康","subtitle":"本机基础接口","group":"access","collectorId":"edge","scope":"仅基础接口，不证明控制同步或家庭链路","staleAfterSeconds":90},
+    {"id":"headscale-control","name":"家庭控制同步","subtitle":"同步证据尚待接入","group":"access","collectorId":"home","scope":"客户端运行不等于控制同步验证","staleAfterSeconds":90},
+    {"id":"tailscale-path","name":"节点数据链路","subtitle":"复用既有探测；尚待适配","group":"access","collectorId":"home","scope":"没有新鲜端到端路径证据时不推断直连或中继","staleAfterSeconds":90},
+    {"id":"derp-base","name":"DERP 基础可达","subtitle":"独立基础检测尚待接入","group":"access","collectorId":"edge","scope":"基础可达不等于业务传输成功","staleAfterSeconds":90},
+    {"id":"tunnel-ready","name":"Cloudflare 隧道就绪","subtitle":"本机 ready 与连接数","group":"access","collectorId":"home","scope":"就绪不证明公网回源或应用可用","staleAfterSeconds":90},
+    {"id":"home-app","name":"公网回家业务","subtitle":"外部端到端检测尚未配置","group":"application","collectorId":"home","scope":"尚未验证外部用户访问、播放或下载","staleAfterSeconds":90},
+    {"id":"collectors","name":"家庭采集链路","subtitle":"服务端接收的独立心跳","group":"monitoring","collectorId":"home","scope":"上报链路状态，不代表全部家庭业务","staleAfterSeconds":90},
+    {"id":"tailscale-client","name":"Tailscale 本机状态","subtitle":"客户端状态与健康告警","group":"access","collectorId":"home","scope":"本机运行状态；不证明控制同步或节点可达","staleAfterSeconds":90},
+    {"id":"backend-link","name":"边缘至数据节点","subtitle":"私网 API 请求","group":"monitoring","collectorId":"edge","scope":"仅证明该私网请求及存储接口响应","staleAfterSeconds":90},
+    {"id":"edge-space","name":"边缘磁盘容量","subtitle":"本机根文件系统统计","group":"monitoring","collectorId":"edge","scope":"只读容量统计，不修改文件系统","staleAfterSeconds":180},
+    {"id":"jellyfin-health","name":"Jellyfin 本机健康","subtitle":"本机健康接口","group":"application","collectorId":"media","scope":"本机健康不证明播放、转码或公网访问","staleAfterSeconds":90},
+    {"id":"media-volume","name":"共享媒体空间","subtitle":"媒体挂载容量","group":"application","collectorId":"media","scope":"共享容量风险；不证明媒体业务已经中断","staleAfterSeconds":180},
+    {"id":"dns-local-response","name":"DNS 本机应答","subtitle":"本机 UDP 应答","group":"network","collectorId":"dns-local","scope":"仅本机查询；与家庭侧可达性分开判断","staleAfterSeconds":90}
+  ]
+}

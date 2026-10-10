@@ -1,0 +1,31 @@
+[Unit]
+Description=Bastion private status backend
+After=network-online.target wg-quick@wg-bastion.service
+Wants=network-online.target
+
+[Service]
+User=bastion-server
+Group=bastion-server
+ExecStart=/usr/local/bin/bastion-server -config /etc/bastion-server/config.private.json
+Restart=on-failure
+RestartSec=5
+StateDirectory=bastion-server
+StateDirectoryMode=0700
+UMask=0077
+Environment=GOMEMLIMIT=128MiB
+Environment=GOMAXPROCS=1
+MemoryMax=256M
+CPUQuota=50%
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

@@ -3,13 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Bastion 家庭网络状态页 · 黑色视觉原型（合成数据，无后端/认证）",
+  "description": "Bastion 家庭网络只读状态页 · 同域真实 API 与显式演示模式",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "dev:demo": "node scripts/demo.mjs dev",
+    "build:demo": "node scripts/demo.mjs build",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "node --test",
-    "check:ui": "npm run build && node scripts/browser-check.mjs"
+    "check:ui": "node scripts/demo.mjs check",
+    "check:live": "npm run build && node scripts/live-browser-check.mjs"
   },
   "devDependencies": {
     "vite": "^6.4.3"

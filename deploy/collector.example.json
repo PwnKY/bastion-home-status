@@ -1,0 +1,20 @@
+{
+  "serverUrl": "https://status.example.com",
+  "secretFile": "/etc/bastion-agent/collector.token",
+  "stateDirectory": "/var/lib/bastion-agent/agent-state",
+  "intervalSeconds": 30,
+  "maxQueuedBatches": 2048,
+  "maxQueueBytes": 16777216,
+  "checks": [
+    {"serviceId":"gateway","kind":"untested"},
+    {"serviceId":"dns","kind":"untested"},
+    {"serviceId":"ipv4","kind":"untested"},
+    {"serviceId":"ipv6","kind":"untested"},
+    {"serviceId":"proxy","kind":"untested"},
+    {"serviceId":"headscale-control","kind":"untested"},
+    {"serviceId":"tailscale-path","kind":"untested"},
+    {"serviceId":"home-app","kind":"untested"},
+    {"serviceId":"tailscale-client","kind":"tailscale","url":"http://local-tailscaled.sock/localapi/v0/status","socket":"/run/tailscale/tailscaled.sock"},
+    {"serviceId":"tunnel-ready","kind":"tunnel","url":"http://127.0.0.1:20241/ready","metricUrl":"http://127.0.0.1:20241/metrics"}
+  ]
+}

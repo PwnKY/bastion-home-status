@@ -2,6 +2,9 @@
 **/node_modules/
 **/dist/
 **/.vite/
+build/
+release/
+frontend/artifacts/live-*.png
 *.log
 *.local
 coverage/
@@ -27,6 +30,9 @@ coverage/
 *.sqlite3-*
 *.db
 *.db-*
+*.private.json
+**/agent-state/
+**/collector-state/
 
 # OS/editor files
 .DS_Store

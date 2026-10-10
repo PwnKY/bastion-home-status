@@ -18,15 +18,16 @@ const SELF = fileURLToPath(import.meta.url);
 
 // 仅扫描文本类公开源与文档；磁盘镜像、依赖、构建产物与运行态文件不在范围内。
 const TEXT_EXTENSIONS = new Set([
-  '.md', '.js', '.mjs', '.cjs', '.json', '.html', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml',
+  '.md', '.js', '.mjs', '.cjs', '.json', '.html', '.css', '.svg', '.txt', '.yml', '.yaml', '.toml', '.go', '.service',
 ]);
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', '.vite', 'artifacts', 'coverage']);
 const ROOT_FILES = [
   'README.md',
   'home-network-status-project.md',
   'home-network-status-implementation-plan.md',
+  'go.mod', 'go.sum', 'deploy/Caddyfile.example',
 ];
-const SCAN_ROOT = 'frontend';
+const SCAN_ROOTS = ['frontend', 'cmd', 'internal', 'deploy', 'docs', 'scripts', '.github'];
 
 // IP 字面量（IPv4 / IPv6）。回环与未指定地址由 allow 回调放行。
 const IPV4 = /\b\d{1,3}(?:\.\d{1,3}){3}\b/g;
@@ -100,7 +101,7 @@ function collectFiles() {
       }
     }
   };
-  walk(path.join(repoRoot, SCAN_ROOT));
+  for (const root of SCAN_ROOTS) walk(path.join(repoRoot, root));
   return files;
 }
 
