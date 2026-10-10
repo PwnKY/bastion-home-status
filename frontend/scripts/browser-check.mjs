@@ -146,7 +146,12 @@ try {
     }
   }
   await scenario('degraded'); await route('overview');
+  await command('Emulation.setTouchEmulationEnabled', { enabled: true });
   await screenshot('overview-mobile.png', 390, 844);
+  check('手机视觉顺序与 DOM 阅读/键盘顺序一致', await evaluate("(() => { const tops=[...document.querySelectorAll('.overview-grid .panel')].map(el=>el.getBoundingClientRect().top);return tops.length===4 && tops.every((top,i)=>i===0||top>tops[i-1]); })()"));
+  check('触摸能力下输入至少16px且操作控件至少44px', await evaluate("matchMedia('(pointer:coarse)').matches && parseFloat(getComputedStyle(document.querySelector('[data-control=scenario]')).fontSize)>=16 && document.querySelector('.refresh-button').getBoundingClientRect().height>=44 && document.querySelector('.mobile-menu').getBoundingClientRect().width>=44"));
+  check('所有悬停样式均限定鼠标能力，不污染触摸态', await evaluate(`(() => { const bad=[]; const walk=(rules,gated=false)=>{for(const r of rules){const next=gated||(r.conditionText?.includes('hover: hover')&&r.conditionText?.includes('pointer: fine'));if(r.selectorText?.includes(':hover')&&!next)bad.push(r.selectorText);if(r.cssRules)walk(r.cssRules,next);}};for(const s of document.styleSheets)walk(s.cssRules);return bad.length===0;})()`));
+  check('允许缩放，声明视口安全区和键盘布局', await evaluate("document.querySelector('meta[name=viewport]').content.includes('viewport-fit=cover') && document.querySelector('meta[name=viewport]').content.includes('interactive-widget=resizes-content') && !/user-scalable=no|maximum-scale/.test(document.querySelector('meta[name=viewport]').content)"));
   check('关闭的手机侧栏不进入键盘焦点序列', await evaluate("document.querySelector('.sidebar').inert"));
   await click('[data-action="menu"]');
   check('手机导航可展开', await evaluate("document.querySelector('.sidebar').classList.contains('is-open')"));
@@ -158,7 +163,16 @@ try {
   await click('[data-action="close-menu"]');
   check('手机导航遮罩可关闭', await evaluate("!document.querySelector('.sidebar').classList.contains('is-open')"));
   check('手机导航关闭后焦点回到菜单按钮', await evaluate("document.activeElement===document.querySelector('[data-action=menu]') && !document.querySelector('.workspace-body').inert"));
+  await command('Emulation.setTouchEmulationEnabled', { enabled: false });
   await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
+  await evaluate("document.querySelector('[data-action=refresh]').focus()");
+  await command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  check('键盘操作无过渡动画，反馈即时', await evaluate("document.documentElement.dataset.input==='keyboard' && getComputedStyle(document.querySelector('[data-action=refresh]')).transitionDuration==='0s'"));
+  await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await command('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await evaluate("document.documentElement.dataset.input='pointer'");
+  check('减少动效偏好取消按钮位移动画', await evaluate("parseFloat(getComputedStyle(document.querySelector('[data-action=refresh]')).transitionDuration)<.001"));
+  await command('Emulation.setEmulatedMedia', { features: [] });
   await route('paths'); await screenshot('paths-desktop.png', 1440, 1100);
   await route('services'); await click('[data-service="ipv6"]'); await screenshot('service-detail.png', 1440, 1100);
   check('页面无浏览器运行错误', errors.length === 0);
