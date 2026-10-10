@@ -86,6 +86,11 @@ func TestJournalRejectsSpoofedTruncatedUnboundedAndUnconfiguredEvidence(t *testi
 			t.Fatal(o)
 		}
 	}
+	started := journalFixture("job_success", boot, c.Unit, at.Add(time.Minute), "95000000")
+	started["MESSAGE_ID"], started["JOB_RESULT"] = jobStartingMessage, ""
+	if o := jobJournalResult(append(good, journalBytes(started)...), c, boot, 100, unknown("job_no_record")); o.Status != "unknown" || o.Evidence != nil {
+		t.Fatal("incomplete later attempt hidden by old success", o)
+	}
 	c.JournalHistory = false
 	if o := jobJournalResult(good, c, boot, 100, unknown("job_no_record")); o.Evidence != nil {
 		t.Fatal("unconfigured fallback used", o)

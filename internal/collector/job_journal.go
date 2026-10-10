@@ -13,11 +13,12 @@ import (
 	"github.com/PwnKY/bastion-home-status/internal/status"
 )
 
+const jobStartingMessage = "7d4958e842da4a758f6c1cdc7b36dcc5"
 const jobFinishedMessage = "39f53479d3a045ac8e11786248231fbf"
 const jobFailedMessage = "be02cf6855d2428ba40df7e9d022f03d"
 
 func jobJournalProbe(ctx context.Context, c Check, boot string, fallback status.Observation) status.Observation {
-	raw, err := readCommand(ctx, "journalctl", "--unit", c.Unit, "--no-pager", "--output=json", "--lines=24", "--output-fields=MESSAGE_ID,UNIT,JOB_TYPE,JOB_RESULT,RESULT,_BOOT_ID,_PID,_UID,__REALTIME_TIMESTAMP,__MONOTONIC_TIMESTAMP", "_PID=1", "MESSAGE_ID="+jobFinishedMessage, "MESSAGE_ID="+jobFailedMessage)
+	raw, err := readCommand(ctx, "journalctl", "--unit", c.Unit, "--no-pager", "--output=json", "--lines=24", "--output-fields=MESSAGE_ID,UNIT,JOB_TYPE,JOB_RESULT,RESULT,_BOOT_ID,_PID,_UID,__REALTIME_TIMESTAMP,__MONOTONIC_TIMESTAMP", "_PID=1", "MESSAGE_ID="+jobStartingMessage, "MESSAGE_ID="+jobFinishedMessage, "MESSAGE_ID="+jobFailedMessage)
 	if err != nil {
 		return fallback
 	}
@@ -58,7 +59,9 @@ func jobJournalResult(raw []byte, c Check, boot string, uptime float64, fallback
 			continue
 		}
 		candidate := ""
-		if entry.Message == jobFinishedMessage && entry.Job == "start" && entry.Result == "done" {
+		if entry.Message == jobStartingMessage && entry.Job == "start" {
+			candidate = "job_started"
+		} else if entry.Message == jobFinishedMessage && entry.Job == "start" && entry.Result == "done" {
 			candidate = "job_success"
 		} else if entry.Message == jobFailedMessage {
 			switch entry.Failure {
@@ -77,7 +80,7 @@ func jobJournalResult(raw []byte, c Check, boot string, uptime float64, fallback
 		// A wall-clock correction must not hide a later failed attempt.
 		chosen, chosenAt, kind = entry, at, candidate
 	}
-	if kind == "" {
+	if kind == "" || kind == "job_started" {
 		return fallback
 	}
 	evidence := &status.Evidence{Kind: kind, At: time.UnixMicro(chosenAt).UTC().Format(time.RFC3339Nano), Historical: true}
