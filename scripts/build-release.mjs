@@ -12,6 +12,8 @@ const env = { ...process.env, CGO_ENABLED: '0', GOOS: 'linux', GOARCH: 'amd64', 
 const run = (cmd, args, cwd = root, extra = {}) => execFileSync(cmd, args, { cwd, env, stdio: 'inherit', ...extra });
 const capture = (cmd, args, cwd = root) => execFileSync(cmd, args, { cwd, env, encoding: 'utf8' }).trim();
 function licenses(cwd, destination) {
+  // Copies from the Go cache may retain Windows read-only attributes.
+  rmSync(destination, { recursive: true, force: true });
   mkdirSync(destination, { recursive: true });
   const modules = capture('go', ['list', '-m', '-f', '{{.Path}}|{{.Version}}|{{.Dir}}', 'all'], cwd).split('\n');
   for (const line of modules) {
