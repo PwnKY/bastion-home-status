@@ -268,7 +268,7 @@ func peerResult(raw []byte, c Check, now time.Time) status.Observation {
 	var lastEvidence *status.Evidence
 	fingerprints := []string{}
 	for key, p := range s.Peers {
-		if !p.Present || !p.Online || p.OK == nil {
+		if !p.Present || p.OK == nil {
 			continue
 		}
 		stamp, err := time.Parse(time.RFC3339Nano, p.At)
@@ -281,9 +281,9 @@ func peerResult(raw []byte, c Check, now time.Time) status.Observation {
 			if *p.OK {
 				kind = "peer_success"
 			}
-			lastEvidence = &status.Evidence{Kind: kind, At: stamp.UTC().Format(time.RFC3339Nano), Historical: now.Sub(stamp) >= time.Duration(maxAge)*time.Second}
+			lastEvidence = &status.Evidence{Kind: kind, At: stamp.UTC().Format(time.RFC3339Nano), Historical: !p.Online || now.Sub(stamp) >= time.Duration(maxAge)*time.Second}
 		}
-		if now.Sub(stamp) >= time.Duration(maxAge)*time.Second {
+		if !p.Online || now.Sub(stamp) >= time.Duration(maxAge)*time.Second {
 			continue
 		}
 		count++

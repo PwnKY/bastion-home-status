@@ -17,6 +17,23 @@ const jobStartingMessage = "7d4958e842da4a758f6c1cdc7b36dcc5"
 const jobFinishedMessage = "39f53479d3a045ac8e11786248231fbf"
 const jobFailedMessage = "be02cf6855d2428ba40df7e9d022f03d"
 
+// systemd may encode a failed start using JOB_RESULT, without a service RESULT.
+// Both forms must be structured and non-conflicting; raw messages are ignored.
+func jobFailureRecord(job, result, failure string) bool {
+	if (job != "" && job != "start") || (result != "" && result != "failed") {
+		return false
+	}
+	if failure == "" {
+		return job == "start" && result == "failed"
+	}
+	switch failure {
+	case "exit-code", "signal", "core-dump", "timeout", "resources", "start-limit-hit", "watchdog", "oom-kill", "protocol", "exec-condition":
+		return true
+	default:
+		return false
+	}
+}
+
 func jobJournalProbe(ctx context.Context, c Check, boot string, fallback status.Observation) status.Observation {
 	raw, err := readCommand(ctx, "journalctl", "--unit", c.Unit, "--no-pager", "--output=json", "--lines=24", "--output-fields=MESSAGE_ID,UNIT,JOB_TYPE,JOB_RESULT,RESULT,_BOOT_ID,_PID,_UID,__REALTIME_TIMESTAMP,__MONOTONIC_TIMESTAMP", "_PID=1", "MESSAGE_ID="+jobStartingMessage, "MESSAGE_ID="+jobFinishedMessage, "MESSAGE_ID="+jobFailedMessage)
 	if err != nil {
@@ -64,13 +81,12 @@ func jobJournalResult(raw []byte, c Check, boot string, uptime float64, fallback
 		} else if entry.Message == jobFinishedMessage && entry.Job == "start" && entry.Result == "done" {
 			candidate = "job_success"
 		} else if entry.Message == jobFailedMessage {
-			switch entry.Failure {
-			case "exit-code", "signal", "core-dump", "timeout", "resources", "start-limit-hit", "watchdog", "oom-kill", "protocol", "exec-condition":
+			candidate = "job_unverified"
+			if jobFailureRecord(entry.Job, entry.Result, entry.Failure) {
 				candidate = "job_failure"
-			default:
-				// An unrecognized trusted failure must not expose an older success.
-				return fallback
 			}
+			// An unrecognized failure blocks an older success, but a subsequent
+			// verified completion can supersede it in journal order.
 		}
 		at, err := strconv.ParseInt(entry.At, 10, 64)
 		if candidate == "" || err != nil || at <= 0 || time.UnixMicro(at).Year() < 2000 || time.UnixMicro(at).Year() > 2100 {
@@ -80,7 +96,7 @@ func jobJournalResult(raw []byte, c Check, boot string, uptime float64, fallback
 		// A wall-clock correction must not hide a later failed attempt.
 		chosen, chosenAt, kind = entry, at, candidate
 	}
-	if kind == "" || kind == "job_started" {
+	if kind == "" || kind == "job_started" || kind == "job_unverified" {
 		return fallback
 	}
 	evidence := &status.Evidence{Kind: kind, At: time.UnixMicro(chosenAt).UTC().Format(time.RFC3339Nano), Historical: true}
