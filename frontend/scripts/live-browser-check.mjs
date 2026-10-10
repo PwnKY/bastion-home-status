@@ -75,7 +75,8 @@ try {
   await sample('home-app', 'untested', { code: 'untested', latencyMs: null });
   await refresh();
   check('认证上报经 SQLite 后真实显示测量值', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='正常' && document.querySelector('[data-service=ipv4] .service-latency').textContent==='18 ms'"));
-  check('61 项观测总览最多 8 行，完整来源默认折叠', await evaluate("document.querySelectorAll('.service-row').length===8 && !document.querySelector('[data-collectors]').open && document.querySelector('.collector-tally').textContent.includes('8 / 8')"));
+  check('61 项观测总览最多 6 行，完整来源默认折叠', await evaluate("document.querySelectorAll('.service-row').length===6 && !document.querySelector('[data-collectors]').open && document.querySelector('.collector-tally').textContent.includes('8 / 8')"));
+  check('真实总览采用宽幅观测与历史，出口标签横向易读', await evaluate("document.querySelector('.service-panel').getBoundingClientRect().width>900 && document.querySelector('.chart-panel').getBoundingClientRect().width>900 && getComputedStyle(document.querySelector('.exit-family-label')).writingMode==='horizontal-tb' && parseFloat(getComputedStyle(document.querySelector('.exit-probe-value')).fontSize)>=32"));
   check('IPv4 DNS、IPv6 ICMP 和 HTTPS 四项测量独立显示', await evaluate("document.querySelectorAll('.exit-probe').length===4 && document.querySelector('.exit-measurements').textContent.includes('ICMP Ping 基准') && document.querySelector('.exit-measurements').textContent.includes('Ping 不代表 DNS') && document.querySelector('.stat-label').textContent.includes('当前概况')"));
   for (let i = 0; i < 3; i++) await sample('ipv6-baseline', 'down', { code: 'dns_error' });
   await refresh();
@@ -100,6 +101,13 @@ try {
   await refresh();
   await click('[data-action=close-dialog]');
   check('详情更新后关闭返回原服务按钮', await evaluate("document.activeElement.dataset.focus==='service-ipv4'"));
+  for (let i = 0; i < 3; i++) await sample('resource-fixture-45', 'down');
+  await refresh();
+  await evaluate("document.querySelector('[data-service=resource-fixture-45]').focus()");
+  await click('[data-service=resource-fixture-45]');
+  await sample('resource-fixture-45'); await sample('resource-fixture-45'); await refresh();
+  await click('[data-action=close-dialog]');
+  check('跨分组关注项恢复退出预览后，详情关闭仍保留可见焦点', await evaluate("!document.querySelector('.service-row[data-service=resource-fixture-45]') && document.activeElement.id==='main-content'"));
   await click('[data-range="7d"]');
   await retry(async () => assert.ok(await evaluate("document.querySelector('.chart-panel').textContent.includes('336 个窗口点')")));
   check('7 天取独立历史端点，缺失窗口不补造', urls.has(`${origin}/api/v1/history?service=ipv4&range=7d`));
@@ -138,12 +146,16 @@ try {
   const layout = await command('Page.getLayoutMetrics');
   const shot = await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: 1440, height: Math.ceil(layout.cssContentSize.height), scale: 1 } });
   await writeFile(path.join(root, 'artifacts/live-integration-local.png'), Buffer.from(shot.data, 'base64'));
+  const viewportShot = await command('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: 1440, height: 1000, scale: 1 } });
+  await writeFile(path.join(root, 'artifacts/live-redesign-desktop-viewport.png'), Buffer.from(viewportShot.data, 'base64'));
   await command('Emulation.setTouchEmulationEnabled', { enabled: true });
   await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await wait(100);
   const mobileLayout = await command('Page.getLayoutMetrics');
   const mobileShot = await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: 390, height: Math.ceil(mobileLayout.cssContentSize.height), scale: 1 } });
   await writeFile(path.join(root, 'artifacts/live-expanded-mobile.png'), Buffer.from(mobileShot.data, 'base64'));
+  const mobileViewportShot = await command('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 0, width: 390, height: 844, scale: 1 } });
+  await writeFile(path.join(root, 'artifacts/live-redesign-mobile-viewport.png'), Buffer.from(mobileViewportShot.data, 'base64'));
   console.log(`\n${passed} live API browser checks passed (local generated fixtures only).`);
 } finally {
   if (ws?.readyState === WebSocket.OPEN) { try { await command('Browser.close'); } catch {} ws.close(); }

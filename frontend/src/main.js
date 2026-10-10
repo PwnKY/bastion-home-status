@@ -3,7 +3,7 @@ import { createDemoSnapshot, SCENARIOS } from './data.js';
 import { deriveView, formatLatency, getHistoryStats } from './model.js';
 import { createClock, emptyLiveSnapshot, fetchSnapshot, unavailableSnapshot } from './api.js';
 import { trendSegments } from './trend.js';
-import { filterServices, previewServices, latencyParts, exitBaseline } from './presentation.js';
+import { filterServices, previewServices, exitBaseline } from './presentation.js';
 
 // Browsers read same-origin summaries only. Device interfaces and credentials stay private.
 const app = document.querySelector('#app');
@@ -71,7 +71,7 @@ const ageText = (value) => {
 const age = (value) => `<span data-age="${e(value)}" title="${e(dateTime(value))}（北京时间）">${ageText(value)}</span>`;
 
 const isDemo = import.meta.env.VITE_ALLOW_DEMO === 'true' && new URLSearchParams(location.search).get('demo') === '1';
-const state = { scenario: 'degraded', page: 'overview', group: 'network', statusFilter: 'all', search: '', range: '24h', eventFilter: 'all', menuOpen: false, collectorsOpen: false, nextStatusFilter: null };
+const state = { scenario: 'degraded', page: 'overview', group: 'all', statusFilter: 'all', search: '', range: '24h', eventFilter: 'all', menuOpen: false, collectorsOpen: false, nextStatusFilter: null };
 let snapshot = isDemo ? createDemoSnapshot(state.scenario) : emptyLiveSnapshot();
 let liveClock = createClock(snapshot);
 const getNow = () => isDemo ? Date.now() : liveClock();
@@ -100,55 +100,40 @@ function toast(message) {
   toastTimer = setTimeout(() => target.classList.remove('visible'), 3200);
 }
 
-function sparkline(points, color = 'var(--green)', area = false) {
-  if (!isDemo) {
-    const values = points.map((point) => point.value).filter(Number.isFinite);
-    if (!values.length) return '<div class="quiet-line"></div>';
-    const max = Math.max(1, ...values) * 1.15;
-    return `<svg class="sparkline" viewBox="0 0 160 48" aria-hidden="true">${trendSegments(points, { width: 160, height: 48, padding: 0, max }).map((part) => part.length === 1 ? `<circle cx="${part[0][0]}" cy="${part[0][1]}" r="2" fill="${color}"/>` : `<polyline points="${part.map((point) => point.join(',')).join(' ')}" fill="none" stroke="${color}" stroke-width="1.5"/>`).join('')}</svg>`;
-  }
-  const values = points.map((point) => typeof point === 'number' ? point : point.value);
-  const min = Math.min(...values) * .75;
-  const max = Math.max(...values) * 1.15;
-  const coords = values.map((value, index) => `${(index / Math.max(1, values.length - 1) * 160).toFixed(1)},${(42 - (value - min) / (max - min || 1) * 32).toFixed(1)}`).join(' ');
-  return `<svg class="sparkline" viewBox="0 0 160 48" preserveAspectRatio="none" aria-hidden="true">${area ? `<polygon points="0,48 ${coords} 160,48" fill="${color}" opacity=".07"/>` : ''}<polyline points="${coords}" fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
-}
-
 function shell(content) {
   const active = NAV.find((item) => item.id === state.page);
   return `<aside class="sidebar ${state.menuOpen ? 'is-open' : ''}" aria-label="主要导航" ${mobileQuery.matches && !state.menuOpen ? 'inert' : ''}>
     <a href="#overview" class="brand" aria-label="Bastion 网络总览"><span class="brand-symbol">${icon('home')}</span><span>bastion<span class="brand-period">.</span></span></a>
-    <div class="workspace"><span class="workspace-icon">${icon('home')}</span><div><strong>家庭网络</strong><span>PERSONAL WORKSPACE</span></div><span class="workspace-dot"></span></div>
+    <div class="workspace"><span class="workspace-icon">${icon('home')}</span><div><strong>家庭网络</strong><span>只读状态面板</span></div><span class="workspace-dot"></span></div>
     <span class="nav-label">观察你的连接</span>
     <nav>${NAV.map((item) => `<a href="#${item.id}" class="nav-item ${state.page === item.id ? 'active' : ''}" ${state.page === item.id ? 'aria-current="page"' : ''}>${icon(item.icon)}<span>${item.label}</span>${item.id === 'events' && view.incidents.some((entry) => entry.status === 'investigating') ? '<span class="nav-indicator"></span>' : ''}</a>`).join('')}</nav>
-    <div class="sidebar-bottom"><div class="local-label"><span class="status-dot"></span>${isDemo ? '本地视觉原型' : '只读观测摘要'}<span class="mono">v0.2</span></div><p>${isDemo ? '不连接真实设备<br>不执行网络诊断' : '设备管理接口不公开<br>不在浏览器保存采集凭据'}</p><div class="sidebar-signature">A QUIETER VIEW OF YOUR NETWORK.</div></div>
+    <div class="sidebar-bottom"><div class="local-label"><span class="status-dot"></span>${isDemo ? '本地视觉原型' : '只读观测摘要'}<span class="mono">READ ONLY</span></div><p>${isDemo ? '不连接真实设备<br>不执行网络诊断' : '设备管理接口不公开<br>不在浏览器保存采集凭据'}</p><div class="sidebar-signature">A QUIETER VIEW OF YOUR NETWORK.</div></div>
   </aside>
   ${state.menuOpen ? '<button class="menu-scrim" data-action="close-menu" aria-label="关闭导航"></button>' : ''}
   <div class="workspace-body" ${mobileQuery.matches && state.menuOpen ? 'inert' : ''}><header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" data-action="menu" data-focus="menu" aria-label="切换导航" aria-expanded="${state.menuOpen}">${icon('grid')}</button><span class="breadcrumb-home">工作空间</span><span class="slash">/</span><span>${active.label}</span></div><div class="topbar-right"><span class="timezone mono">UTC+8</span><span class="demo-badge" data-mode="${isDemo ? 'demo' : apiState}"><span></span>${isDemo ? '演示模式' : apiState === 'error' ? '接口不可达' : apiState === 'loading' ? '连接中' : '真实观测'}</span><span class="avatar" aria-label="只读工作空间">B</span></div></header>
-  <main id="main-content" tabindex="-1"><section class="page-heading"><div><div class="eyebrow">${active.caption}<span class="eyebrow-line"></span>HOME NETWORK</div><h1>${state.page === 'overview' ? '每一段连接，都有迹可循。' : active.label}</h1><p>${{ overview: '从家庭出口到远程接入，用清晰的观测代替猜测。', services: '健康、可达与业务可用，是三个不同的答案。', paths: '把控制连接、数据链路和业务访问分开看。', events: '留下证据，才能看清每一次中断与恢复。' }[state.page]}</p></div><div class="heading-actions">${isDemo ? `<label class="scenario-control"><span class="sr-only">演示场景</span><select data-control="scenario" data-focus="scenario" aria-label="演示场景">${SCENARIOS.map((item) => `<option value="${item.id}" ${item.id === state.scenario ? 'selected' : ''}>${e(item.label.replace('（演示）', ''))}</option>`).join('')}</select>${icon('down')}</label>` : ''}<button class="button refresh-button" data-action="refresh" data-focus="refresh">${icon('refresh')}<span>${isDemo ? '刷新演示' : '刷新快照'}</span></button></div></section>
+  <main id="main-content" tabindex="-1"><section class="page-heading"><div><div class="eyebrow">${active.caption}<span class="eyebrow-line"></span>HOME NETWORK</div><h1>${state.page === 'overview' ? '家庭网络，当前怎样？' : active.label}</h1><p>${{ overview: '先看需要关注的检测，再看出口和回家链路。', services: '健康、可达与业务可用，是三个不同的答案。', paths: '把控制连接、数据链路和业务访问分开看。', events: '留下证据，才能看清每一次中断与恢复。' }[state.page]}</p></div><div class="heading-actions">${isDemo ? `<label class="scenario-control"><span class="sr-only">演示场景</span><select data-control="scenario" data-focus="scenario" aria-label="演示场景">${SCENARIOS.map((item) => `<option value="${item.id}" ${item.id === state.scenario ? 'selected' : ''}>${e(item.label.replace('（演示）', ''))}</option>`).join('')}</select>${icon('down')}</label>` : ''}<button class="button refresh-button" data-action="refresh" data-focus="refresh">${icon('refresh')}<span>${isDemo ? '刷新演示' : '刷新快照'}</span></button></div></section>
   <div class="demo-notice">${icon('info')}<span>${isDemo ? '当前为合成演示快照，不代表真实网络状态。' : apiState === 'error' ? '数据服务不可达：当前显示未知，保留已有历史。' : apiState === 'loading' ? '正在连接数据服务；尚未取得真实观测。' : '真实观测摘要；本机健康不代表公网回家、播放或下载已验证。'}<span class="demo-notice-extra">${isDemo ? '没有连接设备，也没有登录后的管理数据。' : '未知不等于家庭业务故障；检测结论仅覆盖各自范围。'}</span></span><span class="snapshot-time mono">快照 ${time(snapshot.sampledAt)}</span></div>
   ${content}
-  <footer class="page-footer"><span><span class="footer-mark">b.</span>状态有边界，观测有时间。</span><span>${isDemo ? '合成数据 · 北京时间 · 无后端连接' : '公开摘要 · 北京时间 · 隐藏管理数据'}</span></footer></main></div>`;
+  <footer class="page-footer"><span><span class="footer-mark">b.</span>状态有边界，观测有时间。</span><span>${isDemo ? '合成数据 · 北京时间 · 无后端连接' : '只读摘要 · 北京时间 · 隐藏管理数据'}</span></footer></main></div>`;
 }
 
 function stats() {
   const counts = view.statusCounts;
   const observed = counts.healthy + counts.degraded + counts.down;
-  const overallText = view.collector.stale ? '观测数据缺失' : view.overall.status === 'healthy' ? '已测链路正常' : view.overall.status === 'unknown' ? '当前状态未知' : view.overall.status === 'down' ? '发现服务故障' : '部分观测需关注';
+  const overallText = view.collector.stale ? '观测数据缺失' : view.overall.status === 'healthy' ? '已测范围内正常' : view.overall.status === 'unknown' ? '当前状态未知' : view.overall.status === 'down' ? `${counts.down} 项检测有异常` : `${counts.degraded} 项检测需关注`;
   const tone = view.collector.stale ? 'unknown' : view.overall.status;
-  const ipv4 = service(view.services.some((entry) => entry.id === 'ipv4-baseline') ? 'ipv4-baseline' : 'ipv4');
-  const ipv4Measure = latencyParts(ipv4.latencyMs);
+  const sources = isDemo ? [view.collector] : view.collectors;
+  const fresh = sources.filter((entry) => !entry.stale).length;
+  const sourceTone = fresh && fresh === sources.length ? 'healthy' : 'unknown';
   return `<section class="stats-grid" aria-label="状态摘要">
-    <article class="stat-card"><div class="stat-label">当前概况${icon('activity')}</div><div class="stat-value stat-text ${tone}"><span class="large-dot"></span><span class="stat-copy">${overallText}</span></div><div class="stat-foot">${counts.healthy} 正常<span class="separator">/</span>${counts.down} 故障<span class="separator">/</span>${counts.degraded} 降级</div><div class="stat-decoration" aria-hidden="true">${Array.from({ length: 16 }, (_, i) => `<i class="${isDemo ? i > 11 ? tone : 'healthy' : view.services[i % view.services.length]?.status ?? 'unknown'}"></i>`).join('')}</div></article>
-    <article class="stat-card"><div class="stat-label">${ipv4.id === 'ipv4-baseline' ? '国内 IPv4 DNS 基准' : 'IPv4 HTTPS 耗时'}${icon('globe')}</div><div class="stat-value mono">${ipv4Measure.value}<span class="stat-unit">${ipv4Measure.unit}</span></div><div class="stat-foot">${ipv4.stale ? '历史结果已过期' : isDemo ? '家庭侧请求 · 合成样本' : ipv4.id === 'ipv4-baseline' ? '指定 DNS 应答 · 非 ping RTT' : 'HTTPS 完整请求 · 非 ping RTT'}</div>${ipv4.stale ? '<div class="quiet-line"></div>' : sparkline(isDemo ? snapshot.metrics.latencyTrend : ipv4.history, 'var(--green)', true)}</article>
+    <article class="stat-card stat-overall"><div class="stat-label">当前概况${icon('activity')}</div><div class="stat-value stat-text ${tone}"><span class="large-dot"></span><span class="stat-copy">${overallText}</span></div><div class="stat-foot">${counts.healthy} 正常<span class="separator">/</span>${counts.down} 故障<span class="separator">/</span>${counts.degraded} 降级</div><p class="stat-context">各项独立判断，不把单个探针失败当作整个家庭断网。</p></article>
     <article class="stat-card"><div class="stat-label">当前观测覆盖${icon('layers')}</div><div class="stat-value mono">${observed}<span class="stat-denominator">/ ${view.services.length}</span></div><div class="stat-foot">${counts.untested} 项未测试${counts.unknown ? ` · ${counts.unknown} 项未知` : ' · 不把未测算成失败'}</div><div class="coverage-track">${view.services.map((entry) => `<i class="${entry.status}" title="${e(entry.name)}：${statusOf(entry.status).label}"></i>`).join('')}</div></article>
-    <article class="stat-card"><div class="stat-label">家庭采集心跳${icon('pulse')}</div><div class="stat-value stat-text ${view.collector.stale ? 'unknown' : 'healthy'}">${view.collector.stale ? icon('pause') : icon('check')}${view.collector.stale ? view.collector.lastHeartbeatAt ? '观测已过期' : '尚无心跳' : isDemo ? '快照内有效' : '持续上报'}</div><div class="stat-foot">${age(view.collector.lastHeartbeatAt)}<span class="separator">/</span>${view.collector.staleAfterSeconds} 秒过期</div><div class="heartbeat-rule"><span class="mono">${view.collector.intervalSeconds}s INTERVAL</span><span class="${view.collector.stale ? 'unknown' : 'healthy'}">${view.collector.stale ? 'STALE' : 'SAMPLE'}</span></div></article>
+    <article class="stat-card"><div class="stat-label">采集来源${icon('pulse')}</div><div class="stat-value mono ${sourceTone}">${fresh}<span class="stat-denominator">/ ${sources.length}</span><span class="stat-unit">新鲜</span></div><div class="stat-foot">${isDemo ? '合成快照心跳' : sources.length ? '独立来源分别检查心跳' : '尚未取得来源心跳'}</div><p class="stat-context">来源新鲜 ≠ 业务正常</p></article>
   </section>`;
 }
 
 function tabs() {
-  const options = state.page === 'overview' ? GROUPS.filter((entry) => ['network', 'access'].includes(entry.id)) : GROUPS;
-  return `<div class="group-tabs" role="group" aria-label="服务分组">${options.map((group) => `<button class="tab ${state.group === group.id ? 'active' : ''}" data-group="${group.id}" data-focus="group-${group.id}" aria-pressed="${state.group === group.id}">${group.label}<span>${group.id === 'all' ? view.services.length : view.services.filter((entry) => entry.group === group.id).length}</span></button>`).join('')}</div>`;
+  return `<div class="group-tabs" role="group" aria-label="服务分组">${GROUPS.map((group) => `<button class="tab ${state.group === group.id ? 'active' : ''}" data-group="${group.id}" data-focus="group-${group.id}" aria-pressed="${state.group === group.id}">${group.label}<span>${group.id === 'all' ? view.services.length : view.services.filter((entry) => entry.group === group.id).length}</span></button>`).join('')}</div>`;
 }
 
 function historyStrip(entry) {
@@ -157,29 +142,23 @@ function historyStrip(entry) {
 
 function serviceRows() {
   const filtered = filterServices(view.services, state);
-  const visible = state.page === 'overview' ? previewServices(filtered) : filtered;
+  const visible = state.page === 'overview' ? previewServices(filtered, 6) : filtered;
   return visible.length ? visible.map((entry) => `<button class="service-row" data-service="${e(entry.id)}" data-focus="service-${e(entry.id)}" aria-label="查看${e(entry.name)}详情"><span class="service-identity"><span class="service-icon">${icon(SERVICE_ICONS[entry.id])}</span><span><strong>${e(entry.name)}</strong><small>${entry.stale && entry.status !== 'untested' ? '观测已过期 · 当前结论未知' : e(!isDemo ? entry.subtitle || entry.scope : { gateway: '设备与接口', dns: '真实解析应答', ipv4: '直出路径 · IPv4', ipv6: '独立观测 · IPv6', proxy: '明确代理路径', 'headscale-base': '基础接口，不代表节点同步', 'headscale-control': '家庭侧控制会话', 'tailscale-path': '节点间实测，不代表业务', 'derp-base': '仅基础可达性', 'tunnel-ready': '就绪连接，不代表回源', 'home-app': '端到端访问尚未验证', collectors: '采集链路与心跳' }[entry.id] || entry.subtitle || entry.scope)}</small></span></span><span class="service-state">${badge(entry.status)}</span><span class="service-latency mono" title="${!entry.stale && entry.usagePercent != null ? '文件系统使用率' : '此项检测耗时'}">${!entry.stale && entry.usagePercent != null ? percent(entry.usagePercent) : formatLatency(entry.latencyMs)}</span><span class="service-history">${historyStrip(entry)}<span class="history-caption"><span>24h</span><span class="mono">${percent(entry.availability24h)}</span></span></span><span class="row-arrow">${icon('chevron')}</span></button>`).join('') : `<div class="empty-state">${icon('search')}<h3>没有匹配的观测项</h3><p>试试其他名称、状态或分组。</p><button class="button" data-action="clear-filters">清除筛选</button></div>`;
 }
 
 function servicePanel(full = false) {
-  return `<section class="panel service-panel"><div class="panel-heading"><div><h2>服务观测<span class="count-badge">${view.services.length}</span></h2><p>每一项状态，都有自己的检测边界</p></div>${full ? `<span class="tiny-label">${isDemo ? 'SYNTHETIC' : 'LIVE'} OBSERVATIONS</span>` : '<a href="#services" class="text-link">查看全部' + icon('arrow') + '</a>'}</div>${tabs()}${full ? `<div class="service-filters"><label class="search-field">${icon('search')}<input type="search" placeholder="搜索服务…" aria-label="搜索服务" data-control="search" data-focus="search" value="${e(state.search)}" autocapitalize="none" spellcheck="false" enterkeyhint="search" /></label><label class="filter-select"><span class="sr-only">筛选状态</span><select data-control="status" data-focus="status" aria-label="筛选状态"><option value="all">所有状态</option>${Object.entries(STATUS).map(([key, value]) => `<option value="${key}" ${state.statusFilter === key ? 'selected' : ''}>${value.label}</option>`).join('')}</select>${icon('down')}</label></div>` : ''}<div class="table-labels"><span>服务 / 检测范围</span><span>当前状态</span><span>${isDemo ? '延迟' : '测量值'}</span><span>24h 可用率</span><span></span></div><div id="service-rows">${serviceRows()}</div>${full ? `<div class="service-result-count" role="status" aria-live="polite">${filterServices(view.services, state).length} 项匹配 · 共 ${view.services.length} 项</div>` : `<div class="overview-list-footer"><span>优先显示需关注项 · 最多 8 项</span><a href="#services" class="text-link">完整观测列表 ${icon('arrow')}</a></div>`}<div class="panel-footnote">${icon('info')}降级计为可用；未知、未测与维护不计入可用率分母。</div></section>`;
+  return `<section class="panel service-panel"><div class="panel-heading"><div><h2>${full ? '全部服务观测' : '关键观测'}<span class="count-badge">${view.services.length}</span></h2><p>${full ? '按名称、状态或分组定位；点开查看检测范围。' : '跨分组优先显示故障、降级和未知；完整检测在服务页。'}</p></div>${full ? `<span class="tiny-label">${isDemo ? 'SYNTHETIC' : 'LIVE'} OBSERVATIONS</span>` : '<a href="#services" class="text-link">查看全部' + icon('arrow') + '</a>'}</div>${full ? tabs() : ''}${full ? `<div class="service-filters"><label class="search-field">${icon('search')}<input type="search" placeholder="搜索服务…" aria-label="搜索服务" data-control="search" data-focus="search" value="${e(state.search)}" autocapitalize="none" spellcheck="false" enterkeyhint="search" /></label><label class="filter-select"><span class="sr-only">筛选状态</span><select data-control="status" data-focus="status" aria-label="筛选状态"><option value="all">所有状态</option>${Object.entries(STATUS).map(([key, value]) => `<option value="${key}" ${state.statusFilter === key ? 'selected' : ''}>${value.label}</option>`).join('')}</select>${icon('down')}</label></div>` : ''}<div class="table-labels"><span>服务 / 检测范围</span><span>当前状态</span><span>${isDemo ? '延迟' : '测量值'}</span><span>24h 可用率</span><span></span></div><div id="service-rows">${serviceRows()}</div>${full ? `<div class="service-result-count" role="status" aria-live="polite">${filterServices(view.services, state).length} 项匹配 · 共 ${view.services.length} 项</div>` : `<div class="overview-list-footer"><span>关注优先 · 最多 6 项</span><a href="#services" class="text-link">完整观测列表 ${icon('arrow')}</a></div>`}<div class="panel-footnote">${icon('info')}降级计为可用；未知、未测与维护不计入可用率分母。</div></section>`;
 }
 
 function topology() {
-  const entries = ['gateway', 'headscale-control', 'tunnel-ready', 'tailscale-path'].map(service);
-  const [gateway, control, tunnel, data] = entries;
-  const color = (entry) => ({ healthy: '#9bc5a6', degraded: '#d9ad70', unknown: '#626771' }[entry.status] || '#626771');
-  return `<div class="topology-map"><svg viewBox="0 0 440 240" role="img" aria-label="家庭网关分别连接控制端、隧道与用户数据链路，颜色表示各自观测状态"><defs><pattern id="topology-grid" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".65" fill="#30343a"/></pattern></defs><rect width="440" height="240" fill="url(#topology-grid)" opacity=".55"/>
-    <path d="M120 120h52q18 0 18-18V58q0-14 16-14h69M120 120h155M120 120h52q18 0 18 18v44q0 14 16 14h69" fill="none" stroke="#353940" stroke-width="1.5"/>
-    <path d="M120 120h52q18 0 18-18V58q0-14 16-14h69" fill="none" stroke="${color(control)}" stroke-width="1.4" stroke-dasharray="4 6" opacity=".7"/>
-    <path d="M120 120h155" fill="none" stroke="${color(tunnel)}" stroke-width="1.4" opacity=".7"/>
-    <path d="M120 120h52q18 0 18 18v44q0 14 16 14h69" fill="none" stroke="${color(data)}" stroke-width="1.4" stroke-dasharray="4 6" opacity=".7"/>
-    <rect x="25" y="89" width="96" height="62" rx="12" fill="#181b1e" stroke="#353a3f"/>
-    <path d="m64 113 9-7 9 7v12H64Z" fill="none" stroke="${color(gateway)}" stroke-width="1.5"/><path d="M70 125v-8h6v8" fill="none" stroke="${color(gateway)}" stroke-width="1.5"/>
-    <circle cx="120" cy="120" r="3" fill="${color(gateway)}"/>
-    <text x="73" y="172" text-anchor="middle" fill="#a7adb5" font-size="11">家庭入口</text>
-    ${[{ y: 23, label: '控制连接', entry: control }, { y: 99, label: 'Cloudflare Tunnel', entry: tunnel }, { y: 175, label: 'Tailscale 数据链路', entry: data }].map(({ y, label, entry }) => `<rect x="275" y="${y}" width="144" height="42" rx="9" fill="#181b1e" stroke="#30353b"/><circle cx="291" cy="${y + 21}" r="3" fill="${color(entry)}"/><text x="303" y="${y + 25}" fill="#b9bec5" font-size="10.5">${label}</text>`).join('')}
-  </svg><div class="topology-label mono">CONTROL ≠ DATA ≠ BUSINESS</div></div>`;
+  const gateway = service('gateway');
+  const branches = [
+    { label: '控制连接', entry: service('headscale-control') },
+    { label: 'Cloudflare Tunnel', entry: service('tunnel-ready') },
+    { label: 'Tailscale 数据链路', entry: service('tailscale-path') },
+  ];
+  const description = `结构示意，非逐节点路由验证。家庭入口${statusOf(gateway.status).label}；${branches.map(({ label, entry }) => `${label}${statusOf(entry.status).label}`).join('；')}`;
+  return `<div class="topology-map" role="img" aria-label="${e(description)}"><div class="topology-entry">${icon('home')}<strong>家庭入口</strong>${badge(gateway.status)}</div><div class="topology-branches">${branches.map(({ label, entry }) => `<div class="topology-node"><strong>${label}</strong>${badge(entry.status)}</div>`).join('')}</div></div>`;
 }
 
 function pathPanel(full = false) {
@@ -188,7 +167,7 @@ function pathPanel(full = false) {
   const tunnel = service('tunnel-ready');
   const pathLabel = path.stale ? '当前路径未知' : isDemo ? path.status === 'healthy' ? '本轮已验证直连' : '本轮仅中继可达' : ({ direct: '探测路径为直接连接', relay: '探测路径经过中继', mixed: '已观察到混合路径' }[path.pathMode] ?? '尚无端到端路径证据');
   const pathBadge = path.stale || (!isDemo && path.pathMode === 'unknown') ? '未知' : isDemo ? path.status === 'healthy' ? '直连' : '中继' : ({ direct: '直连', relay: '中继', mixed: '混合' }[path.pathMode] ?? '未知');
-  return `<section class="panel path-panel"><div class="panel-heading"><div><h2>回家链路${icon('route', 'heading-icon')}</h2><p>不同连接，独立判断</p></div>${full ? `<span class="tiny-label">${isDemo ? 'DEMO TOPOLOGY' : '结构示意 · 非逐节点验证'}</span>` : '<a href="#paths" class="text-link" aria-label="查看连接路径">' + icon('diagonal') + '</a>'}</div>${topology()}<div class="path-observations"><button class="path-observation" data-service="headscale-control" data-focus="path-headscale-control"><span class="path-observation-icon">${icon('link')}</span><div><strong>控制连接</strong><span>${control.status === 'untested' ? '尚未验证控制同步' : control.stale || control.status === 'unknown' ? '没有新鲜的同步观测' : control.status === 'healthy' ? '本轮控制观测正常' : '指定控制探测需关注'}</span></div>${badge(control.status)}</button><button class="path-observation" data-service="tailscale-path" data-focus="path-tailscale-path"><span class="path-observation-icon">${icon('route')}</span><div><strong>数据链路</strong><span>${pathLabel}</span></div>${badge(path.status, pathBadge)}</button><button class="path-observation" data-service="tunnel-ready" data-focus="path-tunnel-ready"><span class="path-observation-icon">${icon('cloud')}</span><div><strong>隧道就绪</strong><span>${tunnel.stale ? '尚无新鲜就绪观测' : isDemo ? '合成样本：4 条就绪连接' : tunnel.readyConnections == null ? '就绪接口响应；连接数量尚无观测' : `${tunnel.readyConnections} 条就绪连接`}</span></div>${badge(tunnel.status)}</button></div><div class="panel-footnote">${icon('info')}链路可达不代表家庭应用已验证可用。</div></section>`;
+  return `<section class="panel path-panel"><div class="panel-heading"><div><h2>回家链路${icon('route', 'heading-icon')}</h2><p>不同连接，独立判断</p></div>${full ? `<span class="tiny-label">${isDemo ? 'DEMO TOPOLOGY' : '结构示意 · 非逐节点验证'}</span>` : '<a href="#paths" class="text-link" aria-label="查看连接路径">' + icon('diagonal') + '</a>'}</div>${full ? topology() : ''}<div class="path-observations"><button class="path-observation" data-service="headscale-control" data-focus="path-headscale-control"><span class="path-observation-icon">${icon('link')}</span><div><strong>控制连接</strong><span>${control.status === 'untested' ? '尚未验证控制同步' : control.stale || control.status === 'unknown' ? '没有新鲜的同步观测' : control.status === 'healthy' ? '本轮控制观测正常' : '指定控制探测需关注'}</span></div>${badge(control.status)}</button><button class="path-observation" data-service="tailscale-path" data-focus="path-tailscale-path"><span class="path-observation-icon">${icon('route')}</span><div><strong>数据链路</strong><span>${pathLabel}</span></div>${badge(path.status, pathBadge)}</button><button class="path-observation" data-service="tunnel-ready" data-focus="path-tunnel-ready"><span class="path-observation-icon">${icon('cloud')}</span><div><strong>隧道就绪</strong><span>${tunnel.stale ? '尚无新鲜就绪观测' : isDemo ? '合成样本：4 条就绪连接' : tunnel.readyConnections == null ? '就绪接口响应；连接数量尚无观测' : `${tunnel.readyConnections} 条就绪连接`}</span></div>${badge(tunnel.status)}</button></div><div class="panel-footnote">${icon('info')}链路可达不代表家庭应用已验证可用。</div></section>`;
 }
 
 function chartPanel() {
@@ -225,7 +204,7 @@ function attentionBar() {
 function exitMeasurements() {
   if (!view.services.some((entry) => ['ipv4-baseline', 'ipv6-baseline', 'ipv6-icmp'].includes(entry.id))) return '';
   const hasPing = view.services.some((entry) => entry.id === 'ipv6-icmp');
-  return `<section class="exit-measurements" aria-label="IPv4 与 IPv6 独立测量"><div class="exit-heading"><h2>出口观测</h2><p>${hasPing ? 'DNS、ICMP 与 HTTPS 独立测量；Ping 不代表 DNS 或业务成功。' : 'DNS 应答与网页请求分别测量，不是 ping，也不证明完整路由。'}</p></div><div class="exit-grid">${['ipv4', 'ipv6'].map((family) => `<article class="exit-family"><span class="exit-family-label mono">${family.toUpperCase()}</span><div class="exit-family-probes">${[exitBaseline(view.services, family), { id: family, label: 'HTTPS 请求' }].map(({ id, label }) => { const entry = service(id); return `<button class="exit-probe" data-timing-service="${id}" data-focus="timing-${id}" aria-label="查看${family.toUpperCase()} ${label}详情"><span class="exit-probe-heading">${label}${icon('diagonal')}</span><span class="exit-probe-value mono">${formatLatency(entry.latencyMs)}</span>${badge(entry.status)}</button>`; }).join('')}</div></article>`).join('')}</div></section>`;
+  return `<section class="exit-measurements" aria-label="IPv4 与 IPv6 独立测量"><div class="exit-heading"><h2>出口观测</h2><p>${hasPing ? 'DNS、ICMP 与 HTTPS 独立测量；Ping 不代表 DNS 或业务成功。' : 'DNS 应答与网页请求分别测量，不是 ping，也不证明完整路由。'}</p></div><div class="exit-grid">${['ipv4', 'ipv6'].map((family) => `<article class="exit-family"><div class="exit-family-label"><span class="mono">${family.toUpperCase()}</span><span>${family === 'ipv4' ? 'DNS 与网页请求' : hasPing ? 'Ping 与网页请求' : 'DNS 与网页请求'}</span></div><div class="exit-family-probes">${[exitBaseline(view.services, family), { id: family, label: 'HTTPS 请求' }].map(({ id, label }) => { const entry = service(id); return `<button class="exit-probe" data-timing-service="${id}" data-focus="timing-${id}" aria-label="查看${family.toUpperCase()} ${label}详情"><span class="exit-probe-heading">${label}${icon('diagonal')}</span><span class="exit-probe-value mono">${formatLatency(entry.latencyMs)}</span>${badge(entry.status)}</button>`; }).join('')}</div></article>`).join('')}</div></section>`;
 }
 function collectorSummary() {
   if (isDemo) return '';
@@ -233,7 +212,7 @@ function collectorSummary() {
   return `<details class="collector-summary" data-collectors ${state.collectorsOpen ? 'open' : ''}><summary data-focus="collectors"><span>${icon('pulse')}采集来源</span><span class="collector-tally mono">${fresh} / ${view.collectors.length} 新鲜</span><span class="collector-hint">展开来源${icon('down')}</span></summary><div class="collector-grid">${view.collectors.map((entry) => `<div class="collector-item"><span>${badge(entry.stale ? 'unknown' : 'healthy', entry.stale ? '过期' : '新鲜')}<strong>${e(entry.label)}</strong></span><small>${age(entry.lastHeartbeatAt)}</small></div>`).join('') || '<p>尚未登记采集来源</p>'}</div></details>`;
 }
 function overview() {
-  return `${stats()}${attentionBar()}${collectorSummary()}${exitMeasurements()}<div class="overview-grid"><div class="overview-main">${servicePanel()}${chartPanel()}</div><div class="overview-aside">${pathPanel()}${incidentPanel()}</div></div>${boundaryCard()}`;
+  return `${stats()}${attentionBar()}${exitMeasurements()}<div class="overview-grid">${servicePanel()}${pathPanel()}${chartPanel()}${incidentPanel()}</div>${collectorSummary()}${boundaryCard()}`;
 }
 function servicesPage() {
   return `${stats()}${attentionBar()}${collectorSummary()}${servicePanel(true)}<div class="legend-bar"><span>状态图例</span>${Object.entries(STATUS).map(([key, value]) => `<span><i class="legend-square ${key}"></i>${value.label}</span>`).join('')}<span class="legend-explanation">${isDemo ? '24h 为等间隔合成样本统计；7 天数据尚未提供。' : '可用率仅基于已测窗口点；缺失区间保留未知，覆盖率另列。'}</span></div>${boundaryCard()}`;
@@ -318,7 +297,7 @@ app.addEventListener('toggle', (event) => {
   if (event.target.matches('[data-collectors]')) state.collectorsOpen = event.target.open;
 }, true);
 dialog.addEventListener('close', () => {
-  if (dialogReturnFocus) app.querySelector(`[data-focus="${CSS.escape(dialogReturnFocus)}"]`)?.focus({ preventScroll: true });
+  if (dialogReturnFocus) (app.querySelector(`[data-focus="${CSS.escape(dialogReturnFocus)}"]`) ?? app.querySelector('#main-content'))?.focus({ preventScroll: true });
   dialogReturnFocus = null;
 });
 dialog.addEventListener('click', (event) => {
@@ -355,7 +334,7 @@ mobileQuery.addEventListener('change', () => {
 function navigate(initial = false) {
   const requested = window.location.hash.slice(1);
   state.page = NAV.some((entry) => entry.id === requested) ? requested : 'overview';
-  state.group = state.page === 'overview' ? 'network' : 'all';
+  state.group = 'all';
   state.search = '';
   state.statusFilter = state.page === 'services' ? state.nextStatusFilter ?? 'all' : 'all';
   state.nextStatusFilter = null;

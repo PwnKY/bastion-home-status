@@ -91,10 +91,13 @@ try {
   await command('Page.enable'); await command('Runtime.enable'); await command('Network.enable'); await command('Log.enable');
   await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   await command('Page.navigate', { url: `${origin}/?demo=1` }); await wait(500);
-  check('总览加载且始终标注演示模式', await evaluate("document.querySelector('h1').textContent.includes('连接') && document.querySelector('.demo-notice').textContent.includes('合成演示')"));
+  check('总览加载且始终标注演示模式', await evaluate("document.querySelector('h1').textContent.includes('家庭网络') && document.querySelector('.demo-notice').textContent.includes('合成演示')"));
   check('黑色主题，无外部字体或资源', await evaluate("getComputedStyle(document.documentElement).backgroundColor === 'rgb(13, 15, 17)'"));
   check('桌面不显示手机导航按钮', await evaluate("getComputedStyle(document.querySelector('.mobile-menu')).display==='none'"));
+  check('总览采用三项摘要、宽幅观测和历史，完整拓扑不挤在总览', await evaluate("document.querySelectorAll('.stat-card').length===3 && !document.querySelector('.topology-map') && document.querySelector('.service-panel').getBoundingClientRect().width>900 && document.querySelector('.chart-panel').getBoundingClientRect().width>900"));
+  await route('services');
   check('默认 IPv6 为降级，不连带误判 IPv4', await evaluate("document.querySelector('[data-service=ipv6] .status-badge').textContent === '降级' && document.querySelector('[data-service=ipv4] .status-badge').textContent === '正常'"));
+  await route('overview');
   await mkdir(path.join(root, 'artifacts'), { recursive: true });
   await screenshot('overview-desktop.png', 1440, 1100);
   await click('[data-range="7d"]');
@@ -106,7 +109,7 @@ try {
   await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   check('Escape 能关闭模态详情', await evaluate("!document.querySelector('dialog').open"));
   await scenario('healthy');
-  check('正常场景不宣称所有家庭业务可用', await evaluate("document.querySelector('.stat-text').textContent.includes('已测链路正常')"));
+  check('正常场景不宣称所有家庭业务可用', await evaluate("document.querySelector('.stat-text').textContent.includes('已测范围内正常')"));
   await route('services');
   check('全部服务页面显示12项且业务仍未测试', await evaluate("document.querySelectorAll('.service-row').length === 12 && document.querySelector('[data-service=home-app] .status-badge').textContent === '未测试'"));
   await evaluate("(() => { const s=document.querySelector('[data-control=status]');s.value='untested';s.dispatchEvent(new Event('change',{bubbles:true})); })()");
@@ -127,8 +130,8 @@ try {
   check('事件筛选有效', await evaluate("document.querySelectorAll('.incident').length === 2"));
   await click('[data-event-filter="resolved"]');
   check('空事件筛选显示空态', await evaluate("document.querySelector('.empty-state').textContent.includes('没有事件')"));
-  await scenario('degraded'); await route('overview');
-  // Confirm staleness uses elapsed observation time, including an already-open dialog.
+  await scenario('degraded'); await route('services');
+  // The overview is intentionally bounded; inspect full-scope freshness on the services page.
   await click('[data-service="ipv4"]');
   await evaluate('window.__originalNow=Date.now; Date.now=()=>window.__originalNow()+100000');
   await wait(1150);
@@ -143,6 +146,7 @@ try {
     for (const page of ['overview', 'services', 'paths', 'events']) {
       await route(page);
       check(`${width}px ${page} 无横向溢出`, await evaluate('document.documentElement.scrollWidth <= innerWidth + 1'));
+      check(`${width}px ${page} 可读文字至少13px，标题/正文不靠缩字适配`, await evaluate("(() => { const walker=document.createTreeWalker(document.querySelector('#app'),NodeFilter.SHOW_TEXT);let node;while(node=walker.nextNode()){if(!node.textContent.trim())continue;const el=node.parentElement,r=el.getBoundingClientRect();if(r.width&&r.height&&r.right>0&&r.bottom>0&&getComputedStyle(el).visibility==='visible'&&parseFloat(getComputedStyle(el).fontSize)<13)return false;}return getComputedStyle(document.documentElement).fontSize==='16px'&&parseFloat(getComputedStyle(document.querySelector('.page-heading p')).fontSize)>=16;})()"));
     }
   }
   await scenario('degraded'); await route('overview');
@@ -173,6 +177,8 @@ try {
   await evaluate("document.documentElement.dataset.input='pointer'");
   check('减少动效偏好取消按钮位移动画', await evaluate("parseFloat(getComputedStyle(document.querySelector('[data-action=refresh]')).transitionDuration)<.001"));
   await command('Emulation.setEmulatedMedia', { features: [] });
+  await command('Emulation.setDeviceMetricsOverride', { width: 720, height: 550, deviceScaleFactor: 1, mobile: false });
+  for (const page of ['overview', 'services', 'paths', 'events']) { await route(page); check(`200%缩放等效720px ${page} 重排无溢出`, await evaluate('document.documentElement.scrollWidth<=innerWidth+1')); }
   await route('paths'); await screenshot('paths-desktop.png', 1440, 1100);
   await route('services'); await click('[data-service="ipv6"]'); await screenshot('service-detail.png', 1440, 1100);
   check('页面无浏览器运行错误', errors.length === 0);
