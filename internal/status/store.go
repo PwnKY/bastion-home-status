@@ -1,6 +1,7 @@
 package status
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -35,6 +36,8 @@ func Open(c Config) (*Store, error) {
  CREATE TABLE IF NOT EXISTS receipts(agent TEXT, id TEXT, kind TEXT, received INTEGER, PRIMARY KEY(agent,id,kind));
  CREATE TABLE IF NOT EXISTS samples(agent TEXT, id TEXT, service TEXT, received INTEGER, observed INTEGER, expires INTEGER, status TEXT, data TEXT, replay INTEGER NOT NULL, PRIMARY KEY(agent,id));
  CREATE INDEX IF NOT EXISTS sample_history ON samples(service,observed);
+ CREATE INDEX IF NOT EXISTS sample_history_ordered ON samples(service,observed,received);
+ CREATE INDEX IF NOT EXISTS receipt_history ON receipts(agent,kind,received);
  CREATE TABLE IF NOT EXISTS current(service TEXT PRIMARY KEY, observed INTEGER, expires INTEGER, status TEXT, failures INTEGER, successes INTEGER, data TEXT);
  CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT, title TEXT, description TEXT, started INTEGER, resolved INTEGER);
  CREATE INDEX IF NOT EXISTS incident_active ON incidents(target,resolved);
@@ -191,10 +194,13 @@ func boolInt(v bool) int {
 func iso(ms int64) string       { return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano) }
 func number(v float64) *float64 { return &v }
 func (s *Store) Collectors(now time.Time) ([]Collector, error) {
+	return s.collectorsContext(context.Background(), now)
+}
+func (s *Store) collectorsContext(ctx context.Context, now time.Time) ([]Collector, error) {
 	list := make([]Collector, 0, len(s.Config.Agents))
 	for _, a := range s.Config.Agents {
 		var at int64
-		if err := s.db.QueryRow(`SELECT heartbeat FROM collectors WHERE id=?`, a.ID).Scan(&at); err != nil {
+		if err := s.db.QueryRowContext(ctx, `SELECT heartbeat FROM collectors WHERE id=?`, a.ID).Scan(&at); err != nil {
 			return nil, err
 		}
 		c := Collector{ID: a.ID, Label: a.Label, Kind: a.Kind, IntervalSeconds: a.IntervalSeconds, StaleAfterSeconds: a.StaleAfterSeconds, Stale: true}
@@ -208,97 +214,6 @@ func (s *Store) Collectors(now time.Time) ([]Collector, error) {
 		list = append(list, c)
 	}
 	return list, nil
-}
-func (s *Store) History(id string, now time.Time, hours int) ([]Point, error) {
-	step := int64(1800000)
-	count := hours * 2
-	start := now.UnixMilli() - int64(count-1)*step
-	rows, err := s.db.Query(`SELECT observed,expires,status,data,replay FROM samples WHERE service=? AND observed>=? AND observed<=? ORDER BY observed,received LIMIT 75000`, id, start-172800000, now.UnixMilli())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	type sample struct {
-		at, expires int64
-		status      string
-		latency     *float64
-		replay      bool
-	}
-	samples := []sample{}
-	for rows.Next() {
-		var e sample
-		var raw string
-		if err = rows.Scan(&e.at, &e.expires, &e.status, &raw, &e.replay); err != nil {
-			return nil, err
-		}
-		var o Observation
-		if err = json.Unmarshal([]byte(raw), &o); err != nil {
-			return nil, err
-		}
-		e.latency = o.LatencyMS
-		samples = append(samples, e)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	if err = rows.Close(); err != nil {
-		return nil, err
-	}
-	// Long-lived probes must not fill history across a collector's missing heartbeat.
-	var owner string
-	var sourceTTL int64
-	for _, d := range s.Config.Services {
-		if d.ID == id {
-			owner = d.CollectorID
-		}
-	}
-	for _, a := range s.Config.Agents {
-		if a.ID == owner {
-			sourceTTL = int64(a.StaleAfterSeconds) * 1000
-		}
-	}
-	hearts, err := s.db.Query(`SELECT received FROM receipts WHERE agent=? AND kind='heartbeat' AND received>=? AND received<=? ORDER BY received LIMIT 75000`, owner, start-sourceTTL, now.UnixMilli())
-	if err != nil {
-		return nil, err
-	}
-	heartbeats := []int64{}
-	for hearts.Next() {
-		var at int64
-		if err = hearts.Scan(&at); err != nil {
-			hearts.Close()
-			return nil, err
-		}
-		heartbeats = append(heartbeats, at)
-	}
-	if err = hearts.Err(); err != nil {
-		hearts.Close()
-		return nil, err
-	}
-	hearts.Close()
-	points := make([]Point, 0, count)
-	j, h := 0, 0
-	var lastHeartbeat int64
-	var latest *sample
-	for i := 0; i < count; i++ {
-		at := start + int64(i)*step
-		for j < len(samples) && samples[j].at <= at {
-			latest = &samples[j]
-			j++
-		}
-		for h < len(heartbeats) && heartbeats[h] <= at {
-			lastHeartbeat = heartbeats[h]
-			h++
-		}
-		p := Point{At: iso(at), Status: "unknown"}
-		if latest != nil && latest.expires > at && (latest.replay || lastHeartbeat > 0 && lastHeartbeat+sourceTTL > at) {
-			p.Status = latest.status
-			if latest.status == "healthy" || latest.status == "degraded" {
-				p.Value = latest.latency
-			}
-		}
-		points = append(points, p)
-	}
-	return points, nil
 }
 func availability(points []Point) (*float64, *float64) {
 	tested, good, expected := 0, 0, 0
@@ -323,7 +238,10 @@ func availability(points []Point) (*float64, *float64) {
 	return up, coverage
 }
 func (s *Store) Snapshot(now time.Time) (Snapshot, error) {
-	collectors, err := s.Collectors(now)
+	return s.SnapshotContext(context.Background(), now)
+}
+func (s *Store) SnapshotContext(ctx context.Context, now time.Time) (Snapshot, error) {
+	collectors, err := s.collectorsContext(ctx, now)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -336,12 +254,34 @@ func (s *Store) Snapshot(now time.Time) (Snapshot, error) {
 		}
 	}
 	snapshot := Snapshot{Version: 1, Source: "live", SampledAt: iso(now.UnixMilli()), ServerTime: iso(now.UnixMilli()), Disclaimer: "真实检测摘要；本机健康和家庭侧观测不代表外部用户业务已验证。", Collectors: collectors, Collector: family, Services: []Service{}, Metrics: Metrics{LatencyTrend: []Point{}, CoverageTrend: []Point{}}}
+	type gridKey struct {
+		owner string
+		hours int
+	}
+	heartbeats := map[gridKey][]sql.NullInt64{}
+	history := func(id string, hours int) ([]Point, error) {
+		g, e := makeHistoryGrid(now, hours)
+		if e != nil {
+			return nil, e
+		}
+		owner, ttl := s.historyOwner(id)
+		key := gridKey{owner, hours}
+		hearts, ok := heartbeats[key]
+		if !ok {
+			hearts, e = s.heartbeatGrid(ctx, owner, ttl, g)
+			if e != nil {
+				return nil, e
+			}
+			heartbeats[key] = hearts
+		}
+		return s.sampleGrid(ctx, id, g, ttl, hearts)
+	}
 	for _, d := range s.Config.Services {
 		c := byAgent[d.CollectorID]
 		entry := Service{Definition: d, Status: "unknown", Summary: summaries["stale"], ProbeLabel: c.Label, PathMode: "unknown", Detail: []Detail{{"结论限制", d.Scope}, {"补充限制", "检测结果只覆盖此探针；不能推断所有用户或业务均正常。"}}}
 		var at, expires int64
 		var raw string
-		err = s.db.QueryRow(`SELECT observed,expires,status,data FROM current WHERE service=?`, d.ID).Scan(&at, &expires, &entry.Status, &raw)
+		err = s.db.QueryRowContext(ctx, `SELECT observed,expires,status,data FROM current WHERE service=?`, d.ID).Scan(&at, &expires, &entry.Status, &raw)
 		if err != nil && err != sql.ErrNoRows {
 			return Snapshot{}, err
 		}
@@ -382,12 +322,12 @@ func (s *Store) Snapshot(now time.Time) (Snapshot, error) {
 				entry.Status = "healthy"
 			}
 		}
-		entry.History, err = s.History(d.ID, now, 24)
+		entry.History, err = history(d.ID, 24)
 		if err != nil {
 			return Snapshot{}, err
 		}
 		entry.Availability24h, entry.Coverage = availability(entry.History)
-		seven, err := s.History(d.ID, now, 168)
+		seven, err := history(d.ID, 168)
 		if err != nil {
 			return Snapshot{}, err
 		}
@@ -401,11 +341,14 @@ func (s *Store) Snapshot(now time.Time) (Snapshot, error) {
 			}
 		}
 	}
-	snapshot.Incidents, err = s.Incidents()
+	snapshot.Incidents, err = s.incidentsContext(ctx)
 	return snapshot, err
 }
 func (s *Store) Incidents() ([]Incident, error) {
-	rows, err := s.db.Query(`SELECT id,target,title,description,started,resolved FROM incidents ORDER BY started DESC LIMIT 100`)
+	return s.incidentsContext(context.Background())
+}
+func (s *Store) incidentsContext(ctx context.Context) ([]Incident, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,target,title,description,started,resolved FROM incidents ORDER BY started DESC LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}
