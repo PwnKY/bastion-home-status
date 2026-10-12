@@ -44,6 +44,24 @@ func tsmpStatusJSON(t *testing.T, self, peer netip.Addr, online bool, backend st
 	return raw
 }
 
+// tsmpStatusJSONDuplicate reports the same literal on two peer keys so the
+// membership check sees a non-unique match.
+func tsmpStatusJSONDuplicate(t *testing.T, self, peer netip.Addr, online bool, backend string) []byte {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"BackendState": backend,
+		"Self":         map[string]any{"TailscaleIPs": []string{self.String()}},
+		"Peer": map[string]any{
+			"private-node-key-a": map[string]any{"TailscaleIPs": []string{peer.String()}, "Online": online},
+			"private-node-key-b": map[string]any{"TailscaleIPs": []string{peer.String()}, "Online": online},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func TestTSMPTargetRejectsNonTailscaleLiterals(t *testing.T) {
 	for _, ip := range []netip.Addr{tsmpFixture4(1), tsmpFixture4(700), tsmpFixture6(1), tsmpFixture6(9)} {
 		if ip.Is4() {
@@ -121,6 +139,7 @@ func TestTSMPStatusGateSelfAbsentOffline(t *testing.T) {
 	}{
 		{"self", tsmpStatusJSON(t, self, peer, true, "Running"), self, "tsmp_self"},
 		{"absent", tsmpStatusJSON(t, self, peer, true, "Running"), tsmpFixture4(9), "tsmp_absent"},
+		{"duplicate", tsmpStatusJSONDuplicate(t, self, peer, true, "Running"), peer, "tsmp_unavailable"},
 		{"offline", tsmpStatusJSON(t, self, peer, false, "Running"), peer, "tsmp_offline"},
 		{"stopped", tsmpStatusJSON(t, self, peer, true, "Stopped"), peer, "tsmp_unavailable"},
 		{"garbage", []byte("not-json"), peer, "tsmp_unavailable"},
@@ -290,11 +309,77 @@ func TestTSMPProbeFixedCommandBudgetAndVerdicts(t *testing.T) {
 		}
 	})
 
+	t.Run("offline_marker_successful_pong_is_healthy", func(t *testing.T) {
+		// The local Online marker is a control-plane hint, not data-plane proof.
+		// A uniquely matched target with Online=false must still be probed and a
+		// strict matched TSMP pong is healthy regardless of the marker.
+		offline := tsmpStatusJSON(t, self, target, false, "Running")
+		var calls []string
+		readStatus := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			calls = append(calls, "tailscale status --json")
+			return offline, nil
+		}
+		readPing := func(_ context.Context, name string, args ...string) ([]byte, error) {
+			calls = append(calls, name+" "+strings.Join(args, " "))
+			return []byte("pong from private-node (" + target.String() + ", 41641) via TSMP in 9ms\n"), nil
+		}
+		o := tsmpProbeWith(context.Background(), check, readStatus, readPing)
+		if o.Status != "healthy" || o.Code != "tsmp_ok" || o.LatencyMS == nil || *o.LatencyMS != 9 || o.PathMode != "unknown" {
+			t.Fatal(o)
+		}
+		if len(calls) != 2 || calls[0] != "tailscale status --json" || calls[1] != wantPing {
+			t.Fatal(calls)
+		}
+	})
+
+	t.Run("offline_marker_exact_timeout_is_unknown", func(t *testing.T) {
+		// With a false marker the same exact vendor no-reply stays ambiguous:
+		// unknown tsmp_error, never down.
+		offline := tsmpStatusJSON(t, self, target, false, "Running")
+		for name, out := range map[string]string{
+			"legacy":  "timeout waiting for ping reply\n",
+			"current": `ping "` + target.String() + `" timed out` + "\n",
+		} {
+			readStatus := func(_ context.Context, _ string, _ ...string) ([]byte, error) { return offline, nil }
+			readPing := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+				return []byte(out), &exec.ExitError{}
+			}
+			o := tsmpProbeWith(context.Background(), check, readStatus, readPing)
+			if o.Status != "unknown" || o.Code != "tsmp_error" || o.LatencyMS != nil || o.PathMode != "unknown" {
+				t.Fatalf("%s: %+v", name, o)
+			}
+		}
+	})
+
+	t.Run("offline_marker_local_error_is_unknown", func(t *testing.T) {
+		offline := tsmpStatusJSON(t, self, target, false, "Running")
+		cases := map[string]struct {
+			out []byte
+			err error
+		}{
+			"daemon_exit":      {nil, &exec.ExitError{}},
+			"daemon_text":      {[]byte("failed to connect to local tailscaled; it doesn't appear to be running\n"), &exec.ExitError{}},
+			"not_found":        {nil, exec.ErrNotFound},
+			"permission":       {nil, os.ErrPermission},
+			"bounded_overflow": {nil, errOutputBudget},
+		}
+		for name, tc := range cases {
+			readStatus := func(_ context.Context, _ string, _ ...string) ([]byte, error) { return offline, nil }
+			readPing := func(_ context.Context, _ string, _ ...string) ([]byte, error) { return tc.out, tc.err }
+			o := tsmpProbeWith(context.Background(), check, readStatus, readPing)
+			if o.Status != "unknown" || o.Code != "tsmp_unavailable" || o.LatencyMS != nil {
+				t.Fatalf("%s: %+v", name, o)
+			}
+		}
+	})
+
 	t.Run("gate_rejects_before_ping", func(t *testing.T) {
 		for name, raw := range map[string][]byte{
-			"self":    tsmpStatusJSON(t, target, tsmpFixture4(5), true, "Running"),
-			"offline": tsmpStatusJSON(t, self, target, false, "Running"),
-			"absent":  tsmpStatusJSON(t, self, tsmpFixture4(5), true, "Running"),
+			"self":      tsmpStatusJSON(t, target, tsmpFixture4(5), true, "Running"),
+			"absent":    tsmpStatusJSON(t, self, tsmpFixture4(5), true, "Running"),
+			"duplicate": tsmpStatusJSONDuplicate(t, self, target, true, "Running"),
+			"stopped":   tsmpStatusJSON(t, self, target, true, "Stopped"),
+			"garbage":   []byte("not-json"),
 		} {
 			readStatus := func(_ context.Context, _ string, _ ...string) ([]byte, error) { return raw, nil }
 			readPing := func(_ context.Context, _ string, _ ...string) ([]byte, error) {

@@ -82,8 +82,11 @@ type tsmpStatus struct {
 }
 
 // tsmpPeerState verifies the local daemon is Running and the configured literal
-// is exactly one known peer with Online set. Self, absent and offline targets
-// return a fixed code and MUST NOT be probed. Raw status is never published.
+// is exactly one known peer. Self, absent and duplicate targets return a fixed
+// code and MUST NOT be probed. A unique peer whose control marker is false is
+// reported as ("tsmp_offline", false): the marker is a control-plane hint, not
+// data-plane proof, so the caller may still issue the independent probe. Raw
+// status is never published.
 func tsmpPeerState(raw []byte, target netip.Addr) (string, bool) {
 	var state tsmpStatus
 	if json.Unmarshal(raw, &state) != nil || state.BackendState != "Running" {
@@ -187,23 +190,38 @@ func tsmpProbeWith(ctx context.Context, c Check, readStatus, readPing func(conte
 	if err != nil {
 		return unknown("tsmp_unavailable")
 	}
-	if code, ok := tsmpPeerState(raw, target); !ok {
+	// Membership is validated exactly: self, absent and duplicate targets are
+	// never probed. A unique target whose local Online marker is false is still
+	// probed, because that marker is a control-plane hint and not data-plane
+	// proof; only the explicitly configured, uniquely matched literal is targeted.
+	code, ok := tsmpPeerState(raw, target)
+	if !ok && code != "tsmp_offline" {
 		return unknown(code)
 	}
+	// ok means the marker was true; a false marker keeps online=false so a
+	// no-reply stays ambiguous below.
+	online := ok
 	pingCtx, cancel := context.WithTimeout(ctx, tsmpPingBudget)
 	defer cancel()
 	raw, err = readPing(pingCtx, "tailscale", "ping", "--tsmp", "--c=1", "--timeout="+tsmpPingTimeout, "--until-direct=false", target.String())
 	// Caller cancellation is never evidence about the peer, and a local
 	// inability to run or read the measurement stays unknown even though the
-	// peer was verified Online: the daemon/socket can fail independently.
+	// target was verified as one uniquely matched known peer: the daemon/socket
+	// can fail independently.
 	if ctx.Err() != nil || errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrPermission) || errors.Is(err, errOutputBudget) {
 		return unknown("tsmp_unavailable")
 	}
-	// Only the vendor's exact single-line no-reply timeout, after an Online peer
-	// was verified, is treated as down. Every other non-zero exit (including a
-	// daemon/socket failure) and an expired local budget that killed the process
-	// are not proof of a peer timeout and stay unknown.
+	// Only the vendor's exact single-line no-reply timeout is evidence. With a
+	// true Online marker it is a raw peer failure; with a false marker the same
+	// absence stays unknown because the marker is not data-plane proof. Every
+	// other non-zero exit (including a daemon/socket failure) and an expired local
+	// budget that killed the process are not proof of a peer timeout and stay
+	// unknown. A matched TSMP pong below is independent proof and is healthy
+	// regardless of the marker.
 	if tsmpNoReply(raw, target) {
+		if !online {
+			return unknown("tsmp_error")
+		}
 		return status.Observation{Status: "down", Code: "tsmp_error", PathMode: "unknown"}
 	}
 	if err != nil {
