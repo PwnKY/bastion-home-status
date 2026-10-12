@@ -1,25 +1,20 @@
 import './styles.css';
 import { createDemoSnapshot, SCENARIOS } from './data.js';
+import { createGroupPreview } from './group-preview.js';
 import { deriveView, formatLatency, getHistoryStats } from './model.js';
 import { createClock, emptyLiveSnapshot, fetchSnapshot, unavailableSnapshot } from './api.js';
 import { trendSegments } from './trend.js';
-import { filterServices, previewServices, exitBaseline, evidencePresentation } from './presentation.js';
+import { filterServices, exitBaseline, evidencePresentation } from './presentation.js';
+import { CHECK_GROUPS, groupServices, summarizeCheckGroups, parseCheckRoute } from './check-groups.js';
 
 // Browsers read same-origin summaries only. Device interfaces and credentials stay private.
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#service-dialog');
 const NAV = [
   { id: 'overview', label: '网络总览', icon: 'grid', caption: 'OVERVIEW' },
-  { id: 'services', label: '服务观测', icon: 'layers', caption: 'SERVICES' },
+  { id: 'services', label: '检测分组', icon: 'layers', caption: 'CHECK GROUPS' },
   { id: 'paths', label: '连接路径', icon: 'route', caption: 'CONNECTIVITY' },
   { id: 'events', label: '事件时间线', icon: 'clock', caption: 'TIMELINE' },
-];
-const GROUPS = [
-  { id: 'all', label: '全部服务' },
-  { id: 'network', label: '家庭网络' },
-  { id: 'access', label: '远程接入' },
-  { id: 'application', label: '家庭业务' },
-  { id: 'monitoring', label: '采集健康' },
 ];
 const STATUS = {
   healthy: { label: '正常', short: '正常', class: 'healthy' },
@@ -72,8 +67,9 @@ const ageText = (value) => {
 const age = (value) => `<span data-age="${e(value)}" title="${e(dateTime(value))}（北京时间）">${ageText(value)}</span>`;
 
 const isDemo = import.meta.env.VITE_ALLOW_DEMO === 'true' && new URLSearchParams(location.search).get('demo') === '1';
-const state = { scenario: 'degraded', page: 'overview', group: 'all', statusFilter: 'all', search: '', range: '24h', eventFilter: 'all', menuOpen: false, collectorsOpen: false, nextStatusFilter: null };
-let snapshot = isDemo ? createDemoSnapshot(state.scenario) : emptyLiveSnapshot();
+const state = { scenario: 'degraded', page: 'overview', group: 'all', category: null, lastCategory: null, groupHistoryOpen: false, statusFilter: 'all', search: '', range: '24h', eventFilter: 'all', menuOpen: false, collectorsOpen: false, nextStatusFilter: null };
+const demoSnapshot = isDemo && new URLSearchParams(location.search).get('catalog') === 'expanded' ? createGroupPreview : createDemoSnapshot;
+let snapshot = isDemo ? demoSnapshot(state.scenario) : emptyLiveSnapshot();
 let liveClock = createClock(snapshot);
 const getNow = () => isDemo ? Date.now() : liveClock();
 let apiState = isDemo ? 'demo' : 'loading';
@@ -92,6 +88,10 @@ document.addEventListener('pointerdown', () => inputMode('pointer'), { capture: 
 document.addEventListener('keydown', () => inputMode('keyboard'), { capture: true });
 const mobileQuery = window.matchMedia('(max-width: 900px)');
 
+function selectedGroup() { return CHECK_GROUPS.find((group) => group.id === state.category); }
+function pageTitle() { return state.page === 'overview' ? '家庭网络，分组看。' : state.page === 'services' && state.category ? selectedGroup()?.label ?? '全部检测项目' : NAV.find((item) => item.id === state.page).label; }
+function pageServices() { return groupServices(view.services, state.category ?? 'all'); }
+function filteredServices() { return filterServices(pageServices(), { ...state, group: 'all' }); }
 function service(id) { return view.services.find((entry) => entry.id === id) ?? { id, name: '尚未配置', status: 'untested', stale: true, latencyMs: null, history: [], summary: '此检测项尚未接入真实观测。', detail: [], scope: '未配置' }; }
 function toast(message) {
   const target = document.querySelector('#toast');
@@ -112,7 +112,7 @@ function shell(content) {
   </aside>
   ${state.menuOpen ? '<button class="menu-scrim" data-action="close-menu" aria-label="关闭导航"></button>' : ''}
   <div class="workspace-body" ${mobileQuery.matches && state.menuOpen ? 'inert' : ''}><header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" data-action="menu" data-focus="menu" aria-label="切换导航" aria-expanded="${state.menuOpen}">${icon('grid')}</button><span class="breadcrumb-home">工作空间</span><span class="slash">/</span><span>${active.label}</span></div><div class="topbar-right"><span class="timezone mono">UTC+8</span><span class="demo-badge" data-mode="${isDemo ? 'demo' : apiState}"><span></span>${isDemo ? '演示模式' : apiState === 'error' ? '接口不可达' : apiState === 'loading' ? '连接中' : '真实观测'}</span><span class="avatar" aria-label="只读工作空间">B</span></div></header>
-  <main id="main-content" tabindex="-1"><section class="page-heading"><div><div class="eyebrow">${active.caption}<span class="eyebrow-line"></span>HOME NETWORK</div><h1>${state.page === 'overview' ? '家庭网络，当前怎样？' : active.label}</h1><p>${{ overview: '先看需要关注的检测，再看出口和回家链路。', services: '健康、可达与业务可用，是三个不同的答案。', paths: '把控制连接、数据链路和业务访问分开看。', events: '留下证据，才能看清每一次中断与恢复。' }[state.page]}</p></div><div class="heading-actions">${isDemo ? `<label class="scenario-control"><span class="sr-only">演示场景</span><select data-control="scenario" data-focus="scenario" aria-label="演示场景">${SCENARIOS.map((item) => `<option value="${item.id}" ${item.id === state.scenario ? 'selected' : ''}>${e(item.label.replace('（演示）', ''))}</option>`).join('')}</select>${icon('down')}</label>` : ''}<button class="button refresh-button" data-action="refresh" data-focus="refresh">${icon('refresh')}<span>${isDemo ? '刷新演示' : '刷新快照'}</span></button></div></section>
+  <main id="main-content" tabindex="-1"><section class="page-heading"><div><div class="eyebrow">${active.caption}<span class="eyebrow-line"></span>HOME NETWORK</div><h1>${e(pageTitle())}</h1><p>${{ overview: '先选你关心的分组，再展开检测与证据。', services: state.category ? selectedGroup()?.description ?? '跨分组搜索；检测结论仍逐项独立判断。' : '按用途整理，不再把所有检测铺在一起。', paths: '把控制连接、数据链路和业务访问分开看。', events: '留下证据，才能看清每一次中断与恢复。' }[state.page]}</p></div><div class="heading-actions">${isDemo ? `<label class="scenario-control"><span class="sr-only">演示场景</span><select data-control="scenario" data-focus="scenario" aria-label="演示场景">${SCENARIOS.map((item) => `<option value="${item.id}" ${item.id === state.scenario ? 'selected' : ''}>${e(item.label.replace('（演示）', ''))}</option>`).join('')}</select>${icon('down')}</label>` : ''}<button class="button refresh-button" data-action="refresh" data-focus="refresh">${icon('refresh')}<span>${isDemo ? '刷新演示' : '刷新快照'}</span></button></div></section>
   <div class="demo-notice">${icon('info')}<span>${isDemo ? '当前为合成演示快照，不代表真实网络状态。' : apiState === 'error' ? '数据服务不可达：当前显示未知，保留已有历史。' : apiState === 'loading' ? '正在连接数据服务；尚未取得真实观测。' : '真实观测摘要；本机健康不代表公网回家、播放或下载已验证。'}<span class="demo-notice-extra">${isDemo ? '没有连接设备，也没有登录后的管理数据。' : '未知不等于家庭业务故障；检测结论仅覆盖各自范围。'}</span></span><span class="snapshot-time mono">快照 ${time(snapshot.sampledAt)}</span></div>
   ${content}
   <footer class="page-footer"><span><span class="footer-mark">b.</span>状态有边界，观测有时间。</span><span>${isDemo ? '合成数据 · 北京时间 · 无后端连接' : '只读摘要 · 北京时间 · 隐藏管理数据'}</span></footer></main></div>`;
@@ -123,7 +123,7 @@ function stats() {
   const observed = counts.healthy + counts.degraded + counts.down;
   const overallText = view.collector.stale ? '观测数据缺失' : view.overall.status === 'healthy' ? '已测范围内正常' : view.overall.status === 'unknown' ? '当前状态未知' : view.overall.status === 'down' ? `${counts.down} 项检测有异常` : `${counts.degraded} 项检测需关注`;
   const tone = view.collector.stale ? 'unknown' : view.overall.status;
-  const sources = isDemo ? [view.collector] : view.collectors;
+  const sources = view.collectors.length ? view.collectors : isDemo ? [view.collector] : [];
   const fresh = sources.filter((entry) => !entry.stale).length;
   const sourceTone = fresh && fresh === sources.length ? 'healthy' : 'unknown';
   return `<section class="stats-grid" aria-label="状态摘要">
@@ -133,8 +133,8 @@ function stats() {
   </section>`;
 }
 
-function tabs() {
-  return `<div class="group-tabs" role="group" aria-label="服务分组">${GROUPS.map((group) => `<button class="tab ${state.group === group.id ? 'active' : ''}" data-group="${group.id}" data-focus="group-${group.id}" aria-pressed="${state.group === group.id}">${group.label}<span>${group.id === 'all' ? view.services.length : view.services.filter((entry) => entry.group === group.id).length}</span></button>`).join('')}</div>`;
+function groupCards() {
+  return `<section class="check-groups" aria-label="检测分组"><div class="group-section-heading"><div><h2>按分组查看</h2><p>每项检测只归入一组；未知不等于故障。</p></div><a href="#services/all" class="text-link" data-focus="all-checks">搜索全部 ${view.services.length} 项${icon('arrow')}</a></div><div class="check-group-grid">${summarizeCheckGroups(view.services).map((group) => `<a href="#services/${group.id}" class="check-group-card" data-focus="category-${group.id}" aria-label="查看${group.label}，${group.total}项检测，${['down', 'degraded', 'unknown', 'untested', 'maintenance'].filter((key) => group.counts[key]).map((key) => `${group.counts[key]}项${statusOf(key).label}`).join('，') || (group.total ? '已测正常' : '尚无观测')}"><div class="group-card-top"><span class="group-card-icon">${icon(group.icon)}</span>${badge(group.status, group.total ? group.status === 'healthy' ? '已测正常' : statusOf(group.status).label : '尚无观测')}</div><h3>${group.label}</h3><p>${group.description}</p><div class="group-card-bottom"><span><strong class="mono">${group.total}</strong> 项检测</span><span class="group-counts">${['down', 'degraded', 'unknown', 'untested', 'maintenance'].filter((key) => group.counts[key]).map((key) => `<span class="${key}">${group.counts[key]} ${statusOf(key).short}</span>`).join('') || (group.total ? '逐项独立判断' : '等待接入')}</span>${icon('chevron')}</div></a>`).join('')}</div></section>`;
 }
 
 function historyStrip(entry) {
@@ -147,13 +147,12 @@ function evidenceLine(entry) {
 }
 
 function serviceRows() {
-  const filtered = filterServices(view.services, state);
-  const visible = state.page === 'overview' ? previewServices(filtered, 6) : filtered;
+  const visible = filteredServices();
   return visible.length ? visible.map((entry) => `<button class="service-row" data-service="${e(entry.id)}" data-focus="service-${e(entry.id)}" aria-label="查看${e(entry.name)}详情"><span class="service-identity"><span class="service-icon">${icon(SERVICE_ICONS[entry.id])}</span><span><strong>${e(entry.name)}</strong><small>${entry.stale && entry.status !== 'untested' ? '观测已过期 · 当前结论未知' : e(!isDemo ? entry.subtitle || entry.scope : { gateway: '设备与接口', dns: '真实解析应答', ipv4: '直出路径 · IPv4', ipv6: '独立观测 · IPv6', proxy: '明确代理路径', 'headscale-base': '基础接口，不代表节点同步', 'headscale-control': '家庭侧控制会话', 'tailscale-path': '节点间实测，不代表业务', 'derp-base': '仅基础可达性', 'tunnel-ready': '就绪连接，不代表回源', 'home-app': '端到端访问尚未验证', collectors: '采集链路与心跳' }[entry.id] || entry.subtitle || entry.scope)}</small>${evidenceLine(entry)}</span></span><span class="service-state">${badge(entry.status)}</span><span class="service-latency mono" title="${!entry.stale && entry.usagePercent != null ? '文件系统使用率' : '此项检测耗时'}">${!entry.stale && entry.usagePercent != null ? percent(entry.usagePercent) : formatLatency(entry.latencyMs)}</span><span class="service-history">${historyStrip(entry)}<span class="history-caption"><span>24h</span><span class="mono">${percent(entry.availability24h)}</span></span></span><span class="row-arrow">${icon('chevron')}</span></button>`).join('') : `<div class="empty-state">${icon('search')}<h3>没有匹配的观测项</h3><p>试试其他名称、状态或分组。</p><button class="button" data-action="clear-filters">清除筛选</button></div>`;
 }
 
-function servicePanel(full = false) {
-  return `<section class="panel service-panel"><div class="panel-heading"><div><h2>${full ? '全部服务观测' : '关键观测'}<span class="count-badge">${view.services.length}</span></h2><p>${full ? '按名称、状态或分组定位；点开查看检测范围。' : '跨分组优先显示故障、降级和未知；完整检测在服务页。'}</p></div>${full ? `<span class="tiny-label">${isDemo ? 'SYNTHETIC' : 'LIVE'} OBSERVATIONS</span>` : '<a href="#services" class="text-link">查看全部' + icon('arrow') + '</a>'}</div>${full ? tabs() : ''}${full ? `<div class="service-filters"><label class="search-field">${icon('search')}<input type="search" placeholder="搜索服务…" aria-label="搜索服务" data-control="search" data-focus="search" value="${e(state.search)}" autocapitalize="none" spellcheck="false" enterkeyhint="search" /></label><label class="filter-select"><span class="sr-only">筛选状态</span><select data-control="status" data-focus="status" aria-label="筛选状态"><option value="all">所有状态</option>${Object.entries(STATUS).map(([key, value]) => `<option value="${key}" ${state.statusFilter === key ? 'selected' : ''}>${value.label}</option>`).join('')}</select>${icon('down')}</label></div>` : ''}<div class="table-labels"><span>服务 / 检测范围</span><span>当前状态</span><span>${isDemo ? '延迟' : '测量值'}</span><span>24h 可用率</span><span></span></div><div id="service-rows">${serviceRows()}</div>${full ? `<div class="service-result-count" role="status" aria-live="polite">${filterServices(view.services, state).length} 项匹配 · 共 ${view.services.length} 项</div>` : `<div class="overview-list-footer"><span>关注优先 · 最多 6 项</span><a href="#services" class="text-link">完整观测列表 ${icon('arrow')}</a></div>`}<div class="panel-footnote">${icon('info')}降级计为可用；未知、未测与维护不计入可用率分母。</div></section>`;
+function servicePanel() {
+  return `<section class="panel service-panel"><div class="panel-heading"><div><h2>${state.category === 'all' ? '全部检测项目' : '组内检测项目'}<span class="count-badge">${pageServices().length}</span></h2><p>搜索、筛选状态；点开单项查看范围、来源与历史。</p></div><span class="tiny-label">${isDemo ? 'SYNTHETIC' : 'LIVE'} OBSERVATIONS</span></div><div class="service-filters"><label class="search-field">${icon('search')}<input type="search" placeholder="搜索服务…" aria-label="搜索服务" data-control="search" data-focus="search" value="${e(state.search)}" autocapitalize="none" spellcheck="false" enterkeyhint="search" /></label><label class="filter-select"><span class="sr-only">筛选状态</span><select data-control="status" data-focus="status" aria-label="筛选状态"><option value="all">所有状态</option>${Object.entries(STATUS).map(([key, value]) => `<option value="${key}" ${state.statusFilter === key ? 'selected' : ''}>${value.label}</option>`).join('')}</select>${icon('down')}</label></div><div class="table-labels"><span>服务 / 检测范围</span><span>当前状态</span><span>${isDemo ? '延迟' : '测量值'}</span><span>24h 可用率</span><span></span></div><div id="service-rows">${serviceRows()}</div><div class="service-result-count" role="status" aria-live="polite">${filteredServices().length} 项匹配 · ${state.category === 'all' ? '全部' : '本组'} ${pageServices().length} 项</div><div class="panel-footnote">${icon('info')}降级计为可用；未知、未测与维护不计入可用率分母。</div></section>`;
 }
 
 function topology() {
@@ -219,10 +218,11 @@ function collectorSummary() {
   return `<details class="collector-summary" data-collectors ${state.collectorsOpen ? 'open' : ''}><summary data-focus="collectors"><span>${icon('pulse')}采集来源</span><span class="collector-tally mono">${fresh} / ${view.collectors.length} 新鲜</span><span class="collector-hint">展开来源${icon('down')}</span></summary><div class="collector-grid">${view.collectors.map((entry) => `<div class="collector-item"><span>${badge(entry.stale ? 'unknown' : 'healthy', entry.stale ? '过期' : '新鲜')}<strong>${e(entry.label)}</strong></span><small>${age(entry.lastHeartbeatAt)}</small></div>`).join('') || '<p>尚未登记采集来源</p>'}</div></details>`;
 }
 function overview() {
-  return `${stats()}${attentionBar()}${exitMeasurements()}<div class="overview-grid">${servicePanel()}${pathPanel()}${chartPanel()}${incidentPanel()}</div>${collectorSummary()}${boundaryCard()}`;
+  return `<div class="category-overview">${stats()}${attentionBar()}${groupCards()}${collectorSummary()}</div>`;
 }
 function servicesPage() {
-  return `${stats()}${attentionBar()}${collectorSummary()}${servicePanel(true)}<div class="legend-bar"><span>状态图例</span>${Object.entries(STATUS).map(([key, value]) => `<span><i class="legend-square ${key}"></i>${value.label}</span>`).join('')}<span class="legend-explanation">${isDemo ? '24h 为等间隔合成样本统计；7 天数据尚未提供。' : '可用率仅基于已测窗口点；缺失区间保留未知，覆盖率另列。'}</span></div>${boundaryCard()}`;
+  if (!state.category) return `<div class="category-overview">${attentionBar()}${groupCards()}${collectorSummary()}</div>`;
+  return `<div class="group-navigation"><a href="#services" class="text-link" data-focus="back-groups">${icon('arrow', 'back-arrow')}返回检测分组</a><span>${state.category === 'all' ? '跨分组搜索' : `${pageServices().length} 项检测 · 全部 ${view.services.length} 项`}</span>${state.category !== 'all' ? '<a href="#services/all" class="text-link">搜索全部项目' + icon('search') + '</a>' : ''}</div>${servicePanel()}${state.category === 'network' ? `<details class="group-history" data-group-history ${state.groupHistoryOpen ? 'open' : ''}><summary data-focus="group-history">${icon('activity')}出口独立测量与历史<span>展开查看${icon('down')}</span></summary>${exitMeasurements()}${chartPanel()}</details>` : ''}<div class="group-boundary-note">${icon('info')}未知只是缺少新鲜证据；同组检测不互相替代，也不代表完整业务已验证。</div>`;
 }
 function pathsPage() {
   const unknown = service('tailscale-path').stale || service('tailscale-path').status === 'unknown';
@@ -241,7 +241,7 @@ function render({ preserveFocus = false } = {}) {
   previousSignature = view.services.map((entry) => entry.status).join(',') + view.collector.stale + view.collectors.map((entry) => entry.stale).join(',');
   app.innerHTML = shell({ overview, services: servicesPage, paths: pathsPage, events: eventsPage }[state.page]());
   document.body.classList.toggle('menu-open', mobileQuery.matches && state.menuOpen);
-  document.title = `${NAV.find((entry) => entry.id === state.page).label} · Bastion`;
+  document.title = `${pageTitle()} · Bastion`;
   if (focusId) {
     const target = app.querySelector(`[data-focus="${CSS.escape(focusId)}"]`) ?? app.querySelector('#main-content');
     target?.focus({ preventScroll: true });
@@ -267,18 +267,20 @@ function openDetails(id) {
 app.addEventListener('click', (event) => {
   const target = event.target.closest('button');
   if (!target) return;
-  if (target.dataset.service || target.dataset.timingService) return openDetails(target.dataset.service || target.dataset.timingService);
+  if (target.dataset.service || target.dataset.timingService) {
+    target.focus({ preventScroll: true });
+    return openDetails(target.dataset.service || target.dataset.timingService);
+  }
   if (target.dataset.quickStatus) {
-    if (state.page === 'services') { state.statusFilter = target.dataset.quickStatus; state.group = 'all'; state.search = ''; render(); app.querySelector('[data-control="status"]').focus({ preventScroll: true }); }
-    else { state.nextStatusFilter = target.dataset.quickStatus; location.hash = 'services'; }
+    if (state.page === 'services' && state.category === 'all') { state.statusFilter = target.dataset.quickStatus; state.search = ''; render(); app.querySelector('[data-control="status"]').focus({ preventScroll: true }); }
+    else { state.nextStatusFilter = target.dataset.quickStatus; location.hash = 'services/all'; }
     return;
   }
-  if (target.dataset.group) { state.group = target.dataset.group; render({ preserveFocus: true }); return; }
   if (target.dataset.range) { state.range = target.dataset.range; render({ preserveFocus: true }); if (!isDemo && state.range === '7d') refreshHistory(); return; }
   if (target.dataset.eventFilter) { state.eventFilter = target.dataset.eventFilter; render({ preserveFocus: true }); return; }
   switch (target.dataset.action) {
-    case 'refresh': if (isDemo) { snapshot = createDemoSnapshot(state.scenario); render({ preserveFocus: true }); toast('已生成新的合成演示快照 · 未请求真实设备'); } else { refreshLive(true); } break;
-    case 'clear-filters': state.search = ''; state.statusFilter = 'all'; state.group = 'all'; render(); break;
+    case 'refresh': if (isDemo) { snapshot = demoSnapshot(state.scenario); render({ preserveFocus: true }); toast('已生成新的合成演示快照 · 未请求真实设备'); } else { refreshLive(true); } break;
+    case 'clear-filters': state.search = ''; state.statusFilter = 'all'; render(); app.querySelector('[data-control="search"]')?.focus({ preventScroll: true }); break;
     case 'menu': state.menuOpen = !state.menuOpen; render(); if (state.menuOpen) app.querySelector('.sidebar .brand').focus(); break;
     case 'close-menu': closeMenu(); break;
   }
@@ -286,7 +288,7 @@ app.addEventListener('click', (event) => {
 app.addEventListener('change', (event) => {
   if (isDemo && event.target.dataset.control === 'scenario') {
     state.scenario = event.target.value;
-    snapshot = createDemoSnapshot(state.scenario);
+    snapshot = demoSnapshot(state.scenario);
     render({ preserveFocus: true });
     toast(`已切换至${SCENARIOS.find((item) => item.id === state.scenario).label} · 合成数据`);
   } else if (event.target.dataset.control === 'status') {
@@ -298,11 +300,12 @@ app.addEventListener('input', (event) => {
   if (event.target.dataset.control === 'search') {
     state.search = event.target.value;
     document.querySelector('#service-rows').innerHTML = serviceRows();
-    document.querySelector('.service-result-count').textContent = `${filterServices(view.services, state).length} 项匹配 · 共 ${view.services.length} 项`;
+    document.querySelector('.service-result-count').textContent = `${filteredServices().length} 项匹配 · ${state.category === 'all' ? '全部' : '本组'} ${pageServices().length} 项`;
   }
 });
 app.addEventListener('toggle', (event) => {
   if (event.target.matches('[data-collectors]')) state.collectorsOpen = event.target.open;
+  if (event.target.matches('[data-group-history]')) state.groupHistoryOpen = event.target.open;
 }, true);
 dialog.addEventListener('close', () => {
   if (dialogReturnFocus) (app.querySelector(`[data-focus="${CSS.escape(dialogReturnFocus)}"]`) ?? app.querySelector('#main-content'))?.focus({ preventScroll: true });
@@ -340,8 +343,11 @@ mobileQuery.addEventListener('change', () => {
   if (wasOpen) app.querySelector(mobileQuery.matches ? '[data-action="menu"]' : '#main-content').focus({ preventScroll: true });
 });
 function navigate(initial = false) {
-  const requested = window.location.hash.slice(1);
-  state.page = NAV.some((entry) => entry.id === requested) ? requested : 'overview';
+  const requested = parseCheckRoute(window.location.hash);
+  const returningToGroups = state.category && requested.page === 'services' && !requested.category;
+  if (selectedGroup()) state.lastCategory = state.category;
+  state.page = NAV.some((entry) => entry.id === requested.page) ? requested.page : 'overview';
+  state.category = state.page === 'services' ? requested.category : null;
   state.group = 'all';
   state.search = '';
   state.statusFilter = state.page === 'services' ? state.nextStatusFilter ?? 'all' : 'all';
@@ -352,7 +358,8 @@ function navigate(initial = false) {
   render();
   if (!initial) {
     window.scrollTo({ top: 0, behavior: 'instant' });
-    document.querySelector('#main-content').focus({ preventScroll: true });
+    (returningToGroups ? app.querySelector(`[data-focus="category-${CSS.escape(state.lastCategory ?? '')}"]`) : null)?.focus({ preventScroll: true });
+    if (!returningToGroups || !CHECK_GROUPS.some((group) => group.id === state.lastCategory)) document.querySelector('#main-content').focus({ preventScroll: true });
   }
 }
 window.addEventListener('hashchange', () => navigate());

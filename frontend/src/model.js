@@ -114,9 +114,10 @@ export function deriveView(snapshot, now = Date.now()) {
   const live = clone.source === 'live';
   const elapsedMs = live ? Math.max(0, now - (toMillis(clone.serverTime) ?? now)) : 0;
   const collectors = (clone.collectors ?? []).map((entry) => {
-    const ageMs = Number.isFinite(entry.heartbeatAgeSeconds)
+    const heartbeatAt = toMillis(entry.lastHeartbeatAt);
+    const ageMs = live && Number.isFinite(entry.heartbeatAgeSeconds)
       ? entry.heartbeatAgeSeconds * 1000 + elapsedMs
-      : null;
+      : !live && heartbeatAt !== null ? Math.max(0, now - heartbeatAt) : null;
     return { ...entry, stale: clone.apiAvailable === false || ageMs === null || ageMs >= entry.staleAfterSeconds * 1000 };
   });
   const services = (Array.isArray(clone.services) ? clone.services : []).map((service) => {

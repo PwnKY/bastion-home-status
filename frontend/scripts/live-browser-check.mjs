@@ -46,6 +46,7 @@ function check(name, ok) { assert.ok(ok, name); console.log(`PASS LIVE ${++passe
 function command(method, params = {}) { const id = ++seq; return new Promise((resolve, reject) => { const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 12000); pending.set(id, { resolve, reject, timer }); ws.send(JSON.stringify({ id, method, params })); }); }
 async function evaluate(expression) { const r = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text); return r.result.value; }
 async function click(selector) { await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); await wait(100); }
+async function route(hash) { await evaluate(`location.hash=${JSON.stringify(hash)}`); await wait(100); }
 async function refresh() { await click('[data-action=refresh]'); await retry(async () => { assert.equal(await evaluate("document.querySelector('.demo-badge').textContent"), '真实观测'); }); }
 async function post(endpoint, payload, credential = token) { const response = await fetch(`${backendOrigin}/api/v1/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${credential}` }, body: JSON.stringify(payload) }); assert.equal(response.status, 200); }
 const id = () => randomBytes(16).toString('hex');
@@ -66,6 +67,8 @@ try {
   await command('Page.navigate', { url: `${origin}/?demo=1` });
   await retry(async () => assert.equal(await evaluate("document.querySelector('.demo-badge')?.textContent"), '真实观测'));
   check('生产默认真实 API，URL 演示参数也不能启用选择器', await evaluate("!document.querySelector('[data-control=scenario]') && document.querySelector('.demo-notice').textContent.includes('真实观测')"));
+  check('无采集数据时仅展示未知分组，不铺开未取得的测量', await evaluate("document.querySelectorAll('.check-group-card').length===8 && !document.querySelector('.service-row') && document.querySelector('[data-focus=category-network] .status-badge').textContent==='未知'"));
+  await route('services/all');
   check('无采集数据时显示未知，不冒出绿色延迟', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='未知' && document.querySelector('[data-service=ipv4] .service-latency').textContent==='—'"));
   for (const credential of agentTokens) await post('heartbeat', { id: id() }, credential);
   await post('ingest', { id: id(), replay: false, samples: expandedServices.filter((entry) => !['ipv4', 'tunnel-ready', 'tailscale-path', 'home-app'].includes(entry.id)).map((entry) => ({ id: id(), serviceId: entry.id, status: 'healthy', code: 'ok', ageSeconds: 0, latencyMs: 12.345 })) });
@@ -75,9 +78,12 @@ try {
   await sample('home-app', 'untested', { code: 'untested', latencyMs: null });
   await refresh();
   check('认证上报经 SQLite 后真实显示测量值', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='正常' && document.querySelector('[data-service=ipv4] .service-latency').textContent==='18 ms'"));
-  check('61 项观测总览最多 6 行，完整来源默认折叠', await evaluate("document.querySelectorAll('.service-row').length===6 && !document.querySelector('[data-collectors]').open && document.querySelector('.collector-tally').textContent.includes('8 / 8')"));
-  check('真实总览采用宽幅观测与历史，出口标签横向易读', await evaluate("document.querySelector('.service-panel').getBoundingClientRect().width>900 && document.querySelector('.chart-panel').getBoundingClientRect().width>900 && getComputedStyle(document.querySelector('.exit-family-label')).writingMode==='horizontal-tb' && parseFloat(getComputedStyle(document.querySelector('.exit-probe-value')).fontSize)>=32"));
-  check('IPv4 DNS、IPv6 ICMP 和 HTTPS 四项测量独立显示', await evaluate("document.querySelectorAll('.exit-probe').length===4 && document.querySelector('.exit-measurements').textContent.includes('ICMP Ping 基准') && document.querySelector('.exit-measurements').textContent.includes('Ping 不代表 DNS') && document.querySelector('.stat-label').textContent.includes('当前概况')"));
+  await route('overview');
+  check('61 项观测总览只显示八组，完整来源默认折叠', await evaluate("document.querySelectorAll('.check-group-card').length===8 && !document.querySelector('.service-row') && !document.querySelector('[data-collectors]').open && document.querySelector('.collector-tally').textContent.includes('8 / 8')"));
+  check('61 项全部归组，包含新 ID 的兜底项', await evaluate("document.querySelector('[data-focus=all-checks]').textContent.includes('61')"));
+  await route('services/network'); await click('[data-group-history] summary');
+  check('网络组内宽幅观测与历史，出口标签横向易读', await evaluate("document.querySelector('.service-panel').getBoundingClientRect().width>900 && document.querySelector('.chart-panel').getBoundingClientRect().width>900 && getComputedStyle(document.querySelector('.exit-family-label')).writingMode==='horizontal-tb' && parseFloat(getComputedStyle(document.querySelector('.exit-probe-value')).fontSize)>=32"));
+  check('IPv4 DNS、IPv6 ICMP 和 HTTPS 四项测量独立显示', await evaluate("document.querySelectorAll('.exit-probe').length===4 && document.querySelector('.exit-measurements').textContent.includes('ICMP Ping 基准') && document.querySelector('.exit-measurements').textContent.includes('Ping 不代表 DNS')"));
   for (let i = 0; i < 3; i++) await sample('ipv6-baseline', 'down', { code: 'dns_error' });
   await refresh();
   check('DNS 故障保留，不传播到独立 ICMP/HTTPS 观测', await evaluate("document.querySelector('[data-service=ipv6-baseline] .status-badge').textContent==='故障' && document.querySelector('[data-timing-service=ipv6-icmp] .status-badge').textContent==='正常' && document.querySelector('[data-timing-service=ipv6] .status-badge').textContent==='正常'"));
@@ -86,14 +92,17 @@ try {
   check('ICMP 超时撤销 RTT，不切换到 DNS 或撤销 HTTPS 结论', await evaluate("document.querySelector('[data-timing-service=ipv6-icmp] .status-badge').textContent==='故障' && document.querySelector('[data-timing-service=ipv6-icmp] .exit-probe-value').textContent==='—' && !document.querySelector('[data-timing-service=ipv6-baseline]') && document.querySelector('[data-timing-service=ipv6] .status-badge').textContent==='正常'"));
   await sample('ipv6-icmp'); await sample('ipv6-icmp'); await refresh();
   check('ICMP 两次成功后恢复，旧 DNS 故障独立保留', await evaluate("document.querySelector('[data-timing-service=ipv6-icmp] .status-badge').textContent==='正常' && document.querySelector('[data-service=ipv6-baseline] .status-badge').textContent==='故障'"));
-  check('概况故障计数清晰且需关注项置顶', await evaluate("document.querySelector('.stat-foot').textContent.includes('1 故障') && document.querySelector('.service-row').dataset.service==='ipv6-baseline'"));
+  await route('overview');
+  check('概况故障计数及所属网络组清晰', await evaluate("document.querySelector('.stat-foot').textContent.includes('1 故障') && document.querySelector('[data-focus=category-network] .status-badge').textContent==='故障'"));
   await click('[data-quick-status=down]');
-  check('关注项快捷入口进入完整列表并应用故障筛选', await evaluate("location.hash==='#services' && document.querySelector('[data-control=status]').value==='down' && document.querySelectorAll('.service-row').length===1"));
+  check('关注项快捷入口进入完整列表并应用故障筛选', await evaluate("location.hash==='#services/all' && document.querySelector('[data-control=status]').value==='down' && document.querySelectorAll('.service-row').length===1"));
   await evaluate("location.hash='overview'"); await wait(100);
   await click('[data-collectors] summary'); await refresh();
   check('来源展开状态在真实快照刷新后保留', await evaluate("document.querySelector('[data-collectors]').open && document.querySelectorAll('.collector-item').length===8"));
+  await route('services/all');
   await evaluate("document.querySelector('[data-service=ipv4]').focus()"); await refresh();
   check('快照刷新后服务按钮键盘焦点保留', await evaluate("document.activeElement.dataset.focus==='service-ipv4'"));
+  await route('paths');
   check('连接数显示上报的 2 条，不硬编码 4', await evaluate("document.querySelector('.path-observations [data-service=tunnel-ready]').textContent.includes('2 条就绪连接')"));
   check('没有路径证据时不冒充直连或中继，也不把未知标签涂绿', await evaluate("document.querySelector('.path-observations [data-service=tailscale-path]').textContent.includes('暂无新鲜节点探测') && document.querySelector('.path-observations [data-service=tailscale-path] .status-badge').classList.contains('unknown')"));
   const oldRecord = new Date(Date.now() - 2 * 3600000).toISOString();
@@ -101,8 +110,10 @@ try {
   await sample('resource-fixture-0', 'unknown', { code: 'job_previous_boot', latencyMs: null, evidence: { kind: 'job_success', at: oldRecord, historical: true } });
   await sample('headscale-control', 'healthy', { code: 'control_fresh', latencyMs: null, ageSeconds: 10, checkedAgeSeconds: 0, evidence: { kind: 'control_message', at: new Date(Date.now()-10000).toISOString(), historical: false } });
   await refresh();
-  check('旧节点成功记录仅作参考，当前路径和 RTT 仍未知', await evaluate("document.querySelector('.path-observations [data-service=tailscale-path]').textContent.includes('仅作参考') && document.querySelector('.service-row[data-service=tailscale-path] .service-latency').textContent==='—' && document.querySelector('.path-observations [data-service=tailscale-path] .status-badge').textContent==='未知'"));
+  check('旧节点成功记录仅作参考，当前路径仍未知', await evaluate("document.querySelector('.path-observations [data-service=tailscale-path]').textContent.includes('仅作参考') && document.querySelector('.path-observations [data-service=tailscale-path] .status-badge').textContent==='未知'"));
   check('控制文案仅证明近期通信，不再声称本轮已同步', await evaluate("document.querySelector('.path-observations [data-service=headscale-control]').textContent.includes('近期有控制消息；不等于完全同步') && !document.querySelector('.path-panel').textContent.includes('本轮已同步')"));
+  await route('services/all');
+  check('列表不把历史节点成功变为当前 RTT', await evaluate("document.querySelector('[data-service=tailscale-path] .service-latency').textContent==='—'"));
   await click('.service-row[data-service=resource-fixture-0]');
   check('跨启动完成记录仍未知，详情区分观测与来源时间', await evaluate("document.querySelector('dialog .status-badge').textContent==='未知' && document.querySelector('dialog').textContent.includes('来源证据时间') && document.querySelector('dialog').textContent.includes('任务完成 · 仅作参考') && document.querySelector('dialog').textContent.includes('源主机时钟记录，不用于计算当前新鲜度')"));
   await click('[data-action=close-dialog]');
@@ -110,14 +121,16 @@ try {
   check('详情标注真实 API 测量范围与稀疏覆盖', await evaluate("document.querySelector('dialog').textContent.includes('分母：1 个已测样本') && document.querySelector('dialog').textContent.includes('真实观测')"));
   await refresh();
   await click('[data-action=close-dialog]');
-  check('详情更新后关闭返回原服务按钮', await evaluate("document.activeElement.dataset.focus==='service-ipv4'"));
+  check('详情更新后关闭返回原服务按钮', await evaluate("document.activeElement?.dataset.focus==='service-ipv4' || document.activeElement===document.querySelector('[data-service=ipv4]')"));
   for (let i = 0; i < 3; i++) await sample('resource-fixture-45', 'down');
   await refresh();
   await evaluate("document.querySelector('[data-service=resource-fixture-45]').focus()");
   await click('[data-service=resource-fixture-45]');
   await sample('resource-fixture-45'); await sample('resource-fixture-45'); await refresh();
   await click('[data-action=close-dialog]');
-  check('跨分组关注项恢复退出预览后，详情关闭仍保留可见焦点', await evaluate("!document.querySelector('.service-row[data-service=resource-fixture-45]') && document.activeElement.id==='main-content'"));
+  check('固定组内项目恢复后仍保留行及可见焦点', await evaluate("document.querySelector('.service-row[data-service=resource-fixture-45] .status-badge').textContent==='正常' && document.activeElement.dataset.focus==='service-resource-fixture-45'"));
+  await route('services/network');
+  if (!await evaluate("document.querySelector('[data-group-history]').open")) await click('[data-group-history] summary');
   await click('[data-range="7d"]');
   await retry(async () => assert.ok(await evaluate("document.querySelector('.chart-panel').textContent.includes('336 个窗口点')")));
   check('7 天取独立历史端点，缺失窗口不补造', urls.has(`${origin}/api/v1/history?service=ipv4&range=7d`));
@@ -128,7 +141,10 @@ try {
   await evaluate('Date.now=window.__now');
   for (let i = 0; i < 3; i++) await sample('ipv4', 'down');
   await refresh();
-  check('连续三次失败后故障，产生真实持久事件', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='故障' && document.querySelectorAll('.incident').length>0"));
+  check('连续三次失败后故障', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='故障'"));
+  await route('events');
+  check('产生真实持久事件', await evaluate("document.querySelectorAll('.incident').length>0"));
+  await route('services/all');
   await sample('ipv4'); await sample('ipv4'); await refresh();
   check('连续成功后恢复', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='正常'"));
   await click('[data-service=ipv4]');
@@ -137,16 +153,19 @@ try {
   await retry(async () => assert.equal(await evaluate("document.querySelector('.demo-badge').textContent"), '接口不可达'));
   check('后端不可达时撤销当前延迟，不恢复演示绿灯', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='未知' && document.querySelector('[data-service=ipv4] .service-latency').textContent==='—' && !document.querySelector('[data-control=scenario]')"));
   check('已打开详情同步变未知，历史保留', await evaluate("document.querySelector('dialog .status-badge').textContent==='未知' && document.querySelector('dialog').textContent.includes('历史上报延迟')"));
-  check('API 失联保留旧节点来源记录，不补造新路径', await evaluate("document.querySelector('.path-observations [data-service=tailscale-path]').textContent.includes('仅作参考') && document.querySelector('.path-observations [data-service=tailscale-path] .status-badge').classList.contains('unknown')"));
   await click('[data-action=close-dialog]');
+  await route('paths');
+  check('API 失联保留旧节点来源记录，不补造新路径', await evaluate("document.querySelector('.path-observations [data-service=tailscale-path]').textContent.includes('仅作参考') && document.querySelector('.path-observations [data-service=tailscale-path] .status-badge').classList.contains('unknown')"));
+  await route('services/all');
   backend = spawn(binary, ['-config', configFile], { cwd: temp, stdio: 'pipe' });
   await retry(async () => assert.equal((await fetch(`${backendOrigin}/healthz`)).status, 200));
   await refresh();
-  check('后端重启后读取原 SQLite，不丢状态与事件', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='正常' && document.querySelectorAll('.incident').length>0"));
+  check('后端重启后读取原 SQLite，不丢状态', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='正常'"));
+  await route('events'); check('后端重启后持久事件仍保留', await evaluate("document.querySelectorAll('.incident').length>0"));
   for (const width of [1440, 1024, 768, 390, 320]) {
     await command('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 });
-    for (const page of ['overview', 'services', 'paths', 'events']) { await evaluate(`location.hash=${JSON.stringify(page)}`); await wait(80); check(`${width}px ${page} 61项真实接口模式无横向溢出`, await evaluate('document.documentElement.scrollWidth<=innerWidth+1')); }
-    if (width === 390) { await evaluate("location.hash='services'"); await wait(80); check('完整列表保持 61 项、长名称与筛选计数可读', await evaluate("document.querySelectorAll('.service-row').length===61 && document.querySelector('.service-result-count').textContent.includes('61 项匹配')")); }
+    for (const page of ['overview', 'services', 'services/network', 'services/all', 'paths', 'events']) { await evaluate(`location.hash=${JSON.stringify(page)}`); await wait(80); check(`${width}px ${page} 61项真实接口模式无横向溢出`, await evaluate('document.documentElement.scrollWidth<=innerWidth+1')); }
+    if (width === 390) { await evaluate("location.hash='services/all'"); await wait(80); check('完整列表保持 61 项、长名称与筛选计数可读', await evaluate("document.querySelectorAll('.service-row').length===61 && document.querySelector('.service-result-count').textContent.includes('61 项匹配')")); }
   }
   check('无 JavaScript 运行错误', errors.length === 0);
   check('浏览器不保存采集凭据，也不连接设备地址', !(await evaluate('document.documentElement.outerHTML')).includes(token) && await evaluate('localStorage.length===0 && sessionStorage.length===0') && [...urls].every((url) => url.startsWith(origin) || url.startsWith('data:')));

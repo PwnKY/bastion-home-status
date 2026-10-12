@@ -1,4 +1,4 @@
-// Dependency-free local Chrome/CDP smoke checks. Never uses MCP or a user's browser profile.
+// Local generated fixtures + isolated Chrome/CDP only. Never user profiles/MCP.
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -7,187 +7,105 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import assert from 'node:assert/strict';
-
 const root = fileURLToPath(new URL('../', import.meta.url));
-const chromePath = process.env.CHROME_PATH || [
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-  '/usr/bin/google-chrome', '/usr/bin/chromium', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-].find(existsSync);
-if (!chromePath) throw new Error('Chrome 未找到；请设置 CHROME_PATH。检查只使用本机浏览器，不安装或调用 MCP。');
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function port() {
-  const server = net.createServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const assigned = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return assigned;
-}
-async function retry(fn) {
-  let last;
-  for (let i = 0; i < 80; i++) { try { return await fn(); } catch (error) { last = error; await wait(100); } }
-  throw last;
-}
-const serverPort = await port();
-const debugPort = await port();
-const origin = `http://127.0.0.1:${serverPort}`;
-const profile = await mkdtemp(path.join(tmpdir(), 'bastion-ui-check-'));
-const server = spawn(process.execPath, [path.join(root, 'node_modules/vite/bin/vite.js'), 'preview', '--host', '127.0.0.1', '--port', String(serverPort), '--strictPort'], { cwd: root, stdio: 'pipe' });
-const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', `--remote-debugging-port=${debugPort}`, '--remote-debugging-address=127.0.0.1', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' });
-let ws;
-let seq = 0;
-const pending = new Map();
-const errors = [];
-const urls = new Set();
-let passed = 0;
-function check(name, condition) { assert.ok(condition, name); passed++; console.log(`PASS ${String(passed).padStart(2, '0')} ${name}`); }
-function command(method, params = {}) {
-  const id = ++seq;
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 12000);
-    pending.set(id, { resolve, reject, timeout });
-    ws.send(JSON.stringify({ id, method, params }));
-  });
-}
-async function evaluate(expression) {
-  const result = await command('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (result.exceptionDetails) throw new Error(result.exceptionDetails.text + ' ' + result.exceptionDetails.exception?.description);
-  return result.result.value;
-}
-async function click(selector) { await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); await wait(70); }
-async function scenario(id) {
-  await evaluate(`(() => { const s=document.querySelector('[data-control="scenario"]'); s.value=${JSON.stringify(id)}; s.dispatchEvent(new Event('change',{bubbles:true})); })()`);
-  await wait(70);
-}
-async function route(name) { await evaluate(`location.hash=${JSON.stringify(name)}`); await wait(100); }
-async function screenshot(name, width, height) {
-  await command('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 500 });
-  await wait(120);
-  await evaluate('document.fonts.ready.then(() => true)');
-  await evaluate("document.querySelector('#toast').classList.remove('visible')");
-  const layout = await command('Page.getLayoutMetrics');
-  const content = layout.cssContentSize;
-  const modalOpen = await evaluate("document.querySelector('dialog').open");
-  const image = await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: !modalOpen, clip: { x: 0, y: 0, width, height: modalOpen ? height : Math.ceil(content.height), scale: 1 } });
-  await writeFile(path.join(root, 'artifacts', name), Buffer.from(image.data, 'base64'));
-}
-try {
-  await retry(async () => { const response = await fetch(origin); if (!response.ok) throw new Error('preview server pending'); });
-  const targets = await retry(async () => { const response = await fetch(`http://127.0.0.1:${debugPort}/json`); return response.json(); });
-  const target = targets.find((entry) => entry.type === 'page');
-  ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => { ws.addEventListener('open', resolve, { once: true }); ws.addEventListener('error', reject, { once: true }); });
-  ws.addEventListener('message', ({ data }) => {
-    const message = JSON.parse(data);
-    if (message.id) {
-      const item = pending.get(message.id);
-      if (!item) return;
-      clearTimeout(item.timeout); pending.delete(message.id);
-      message.error ? item.reject(new Error(message.error.message)) : item.resolve(message.result);
-    } else if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text);
-    else if (message.method === 'Log.entryAdded' && message.params.entry.level === 'error') errors.push(message.params.entry.text);
-    else if (message.method === 'Network.requestWillBeSent') urls.add(message.params.request.url);
-  });
-  await command('Page.enable'); await command('Runtime.enable'); await command('Network.enable'); await command('Log.enable');
-  await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
-  await command('Page.navigate', { url: `${origin}/?demo=1` }); await wait(500);
-  check('总览加载且始终标注演示模式', await evaluate("document.querySelector('h1').textContent.includes('家庭网络') && document.querySelector('.demo-notice').textContent.includes('合成演示')"));
-  check('黑色主题，无外部字体或资源', await evaluate("getComputedStyle(document.documentElement).backgroundColor === 'rgb(13, 15, 17)'"));
-  check('桌面不显示手机导航按钮', await evaluate("getComputedStyle(document.querySelector('.mobile-menu')).display==='none'"));
-  check('总览采用三项摘要、宽幅观测和历史，完整拓扑不挤在总览', await evaluate("document.querySelectorAll('.stat-card').length===3 && !document.querySelector('.topology-map') && document.querySelector('.service-panel').getBoundingClientRect().width>900 && document.querySelector('.chart-panel').getBoundingClientRect().width>900"));
-  await route('services');
-  check('默认 IPv6 为降级，不连带误判 IPv4', await evaluate("document.querySelector('[data-service=ipv6] .status-badge').textContent === '降级' && document.querySelector('[data-service=ipv4] .status-badge').textContent === '正常'"));
-  await route('overview');
-  await mkdir(path.join(root, 'artifacts'), { recursive: true });
-  await screenshot('overview-desktop.png', 1440, 1100);
-  await click('[data-range="7d"]');
-  check('7天显示缺少数据，而非冒用24h样本', await evaluate("document.querySelector('.chart-empty').textContent.includes('还没有 7 天')"));
-  await click('[data-range="24h"]');
-  await click('[data-service="ipv6"]');
-  check('服务详情为原生模态框，含检测边界', await evaluate("document.querySelector('dialog').open && document.querySelector('dialog').textContent.includes('检测边界')"));
-  await command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-  await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-  check('Escape 能关闭模态详情', await evaluate("!document.querySelector('dialog').open"));
-  await scenario('healthy');
-  check('正常场景不宣称所有家庭业务可用', await evaluate("document.querySelector('.stat-text').textContent.includes('已测范围内正常')"));
-  await route('services');
-  check('全部服务页面显示12项且业务仍未测试', await evaluate("document.querySelectorAll('.service-row').length === 12 && document.querySelector('[data-service=home-app] .status-badge').textContent === '未测试'"));
-  await evaluate("(() => { const s=document.querySelector('[data-control=status]');s.value='untested';s.dispatchEvent(new Event('change',{bubbles:true})); })()");
-  check('状态筛选有效', await evaluate("document.querySelectorAll('.service-row').length === 1"));
-  await evaluate("(() => { const s=document.querySelector('[data-control=status]');s.value='all';s.dispatchEvent(new Event('change',{bubbles:true})); const i=document.querySelector('[data-control=search]');i.value='DNS';i.dispatchEvent(new Event('input',{bubbles:true})); })()");
-  check('服务名称搜索有效且保留输入', await evaluate("document.querySelectorAll('.service-row').length === 1 && document.querySelector('[data-control=search]').value==='DNS'"));
-  await scenario('lost');
-  await route('overview');
-  check('采集失联显示未知，不显示家庭故障', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='未知' && document.querySelector('[data-service=ipv4] .service-latency').textContent==='—' && document.querySelector('.stat-text').textContent.includes('观测数据缺失')"));
-  await route('services');
-  check('失联时公网独立观测仍正常，业务仍未测试', await evaluate("document.querySelector('[data-service=headscale-base] .status-badge').textContent==='正常' && document.querySelector('[data-service=home-app] .status-badge').textContent==='未测试'"));
-  await click('[data-service="gateway"]');
-  check('过期详情区分当前结论与历史延迟', await evaluate("document.querySelector('dialog').textContent.includes('历史上报延迟') && document.querySelector('dialog').textContent.includes('不作为当前延迟')"));
-  await click('[data-action="close-dialog"]');
-  await route('paths');
-  check('链路页区分 CONTROL / DATA / BUSINESS', await evaluate("document.querySelectorAll('.boundary-columns article').length === 3"));
-  await route('events');
-  check('事件筛选有效', await evaluate("document.querySelectorAll('.incident').length === 2"));
-  await click('[data-event-filter="resolved"]');
-  check('空事件筛选显示空态', await evaluate("document.querySelector('.empty-state').textContent.includes('没有事件')"));
-  await scenario('degraded'); await route('services');
-  // The overview is intentionally bounded; inspect full-scope freshness on the services page.
-  await click('[data-service="ipv4"]');
-  await evaluate('window.__originalNow=Date.now; Date.now=()=>window.__originalNow()+100000');
-  await wait(1150);
-  check('停留超过有效期自动未知，未假装后台实时刷新', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='未知'"));
-  check('已打开详情也自动更新为未知，历史延迟单独标记', await evaluate("document.querySelector('dialog .dialog-status .status-badge').textContent==='未知' && document.querySelector('dialog .dialog-status .mono').textContent==='—' && document.querySelector('dialog').textContent.includes('历史上报延迟')"));
-  await click('[data-action="close-dialog"]');
-  await evaluate('Date.now=window.__originalNow'); await click('[data-action="refresh"]');
-  check('刷新只生成新的演示快照并提示', await evaluate("document.querySelector('#toast').textContent.includes('未请求真实设备') && document.querySelector('[data-service=ipv4] .status-badge').textContent==='正常'"));
-  for (const width of [1440, 1024, 768, 390, 320]) {
-    await command('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 });
-    await wait(80);
-    for (const page of ['overview', 'services', 'paths', 'events']) {
-      await route(page);
-      check(`${width}px ${page} 无横向溢出`, await evaluate('document.documentElement.scrollWidth <= innerWidth + 1'));
-      check(`${width}px ${page} 可读文字至少13px，标题/正文不靠缩字适配`, await evaluate("(() => { const walker=document.createTreeWalker(document.querySelector('#app'),NodeFilter.SHOW_TEXT);let node;while(node=walker.nextNode()){if(!node.textContent.trim())continue;const el=node.parentElement,r=el.getBoundingClientRect();if(r.width&&r.height&&r.right>0&&r.bottom>0&&getComputedStyle(el).visibility==='visible'&&parseFloat(getComputedStyle(el).fontSize)<13)return false;}return getComputedStyle(document.documentElement).fontSize==='16px'&&parseFloat(getComputedStyle(document.querySelector('.page-heading p')).fontSize)>=16;})()"));
-    }
+const chromePath = process.env.CHROME_PATH || ['C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Google/Chrome/Application/chrome.exe','/usr/bin/google-chrome','/usr/bin/chromium','/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].find(existsSync);
+if(!chromePath) throw new Error('Chrome missing; set CHROME_PATH. No MCP/profile reuse.');
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function port(){const s=net.createServer();await new Promise(r=>s.listen(0,'127.0.0.1',r));const p=s.address().port;await new Promise(r=>s.close(r));return p;}
+async function retry(fn){let last;for(let i=0;i<80;i++){try{return await fn();}catch(e){last=e;await wait(100);}}throw last;}
+const serverPort=await port(),debugPort=await port(),origin=`http://127.0.0.1:${serverPort}`;
+const profile=await mkdtemp(path.join(tmpdir(),'bastion-group-check-'));
+const server=spawn(process.execPath,[path.join(root,'node_modules/vite/bin/vite.js'),'preview','--host','127.0.0.1','--port',String(serverPort),'--strictPort'],{cwd:root,stdio:'pipe'});
+const chrome=spawn(chromePath,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking',`--remote-debugging-port=${debugPort}`,'--remote-debugging-address=127.0.0.1',`--user-data-dir=${profile}`,'about:blank'],{stdio:'ignore'});
+let ws,seq=0,passed=0;const pending=new Map(),errors=[],urls=new Set();
+function check(name,ok){assert.ok(ok,name);console.log(`PASS ${++passed} ${name}`);}
+function command(method,params={}){const id=++seq;return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{pending.delete(id);reject(new Error(`CDP timeout ${method}`));},12000);pending.set(id,{resolve,reject,timer});ws.send(JSON.stringify({id,method,params}));});}
+async function evaluate(expression){const r=await command('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description||r.exceptionDetails.text);return r.result.value;}
+async function click(selector){await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);await wait(100);}
+async function route(hash){await evaluate(`location.hash=${JSON.stringify(hash)}`);await wait(100);}
+async function scenario(id){await evaluate(`(()=>{const s=document.querySelector('[data-control=scenario]');s.value=${JSON.stringify(id)};s.dispatchEvent(new Event('change',{bubbles:true}));})()`);await wait(100);}
+async function viewport(width,height=900){await command('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width<500});await wait(100);}
+async function screenshot(name,width,height){await viewport(width,height);await evaluate('document.fonts.ready.then(()=>true)');await evaluate("document.querySelector('#toast').classList.remove('visible')");const layout=await command('Page.getLayoutMetrics');const modal=await evaluate('document.querySelector("dialog").open');const image=await command('Page.captureScreenshot',{format:'png',captureBeyondViewport:!modal,clip:{x:0,y:0,width,height:modal?height:Math.ceil(layout.cssContentSize.height),scale:1}});await writeFile(path.join(root,'artifacts',name),Buffer.from(image.data,'base64'));}
+try{
+ await retry(async()=>assert.equal((await fetch(origin)).status,200));
+ const targets=await retry(async()=>(await fetch(`http://127.0.0.1:${debugPort}/json`)).json());ws=new WebSocket(targets.find(e=>e.type==='page').webSocketDebuggerUrl);
+ await new Promise((resolve,reject)=>{ws.addEventListener('open',resolve,{once:true});ws.addEventListener('error',reject,{once:true});});
+ ws.addEventListener('message',({data})=>{const m=JSON.parse(data);if(m.id){const p=pending.get(m.id);if(!p)return;clearTimeout(p.timer);pending.delete(m.id);m.error?p.reject(new Error(m.error.message)):p.resolve(m.result);}else if(m.method==='Runtime.exceptionThrown')errors.push(m.params.exceptionDetails.text);else if(m.method==='Network.requestWillBeSent')urls.add(m.params.request.url);});
+ await command('Page.enable');await command('Runtime.enable');await command('Network.enable');await viewport(1440,1000);
+ await command('Page.navigate',{url:`${origin}/?demo=1&catalog=expanded`});await wait(500);
+ check('60-item preview is explicitly synthetic',await evaluate("document.querySelector('.demo-notice').textContent.includes('合成演示') && document.querySelector('[data-control=scenario]')"));
+ check('overview shows eight group entry points, no giant table/chart/path pile',await evaluate("document.querySelectorAll('.check-group-card').length===8 && !document.querySelector('.service-row') && !document.querySelector('.chart-panel') && !document.querySelector('.path-panel')"));
+ check('all current checks counted without retired placeholders',await evaluate("document.querySelector('[data-focus=all-checks]').textContent.includes('60') && !document.body.textContent.includes('家庭应用')"));
+ check('black theme and readable compact summaries retained',await evaluate("getComputedStyle(document.documentElement).backgroundColor==='rgb(13, 15, 17)' && document.querySelectorAll('.stat-card').length===3"));
+ check('desktop menu remains hidden',await evaluate("getComputedStyle(document.querySelector('.mobile-menu')).display==='none'"));
+ check('unknown group is not green and includes explicit unknown count',await evaluate("document.querySelector('[data-focus=category-access] .status-badge').classList.contains('unknown') && document.querySelector('[data-focus=category-access]').textContent.includes('1 未知')"));
+ await mkdir(path.join(root,'artifacts'),{recursive:true});await screenshot('grouped-overview-desktop.png',1440,1000);
+ await click('[data-focus=category-dns]');
+ check('category link has a deep URL and only its seven checks',await evaluate("location.hash==='#services/dns' && document.querySelector('h1').textContent==='DNS 解析' && document.querySelectorAll('.service-row').length===7 && !document.querySelector('[data-service=ipv4]')"));
+ await screenshot('grouped-dns-desktop.png',1440,1000);
+ await evaluate("document.querySelector('[data-service=dns]').focus()");await click('[data-service=dns]');
+ check('individual detail still exposes scope/source/history, not settings',await evaluate("document.querySelector('dialog').open && document.querySelector('dialog').textContent.includes('检测边界') && document.querySelector('dialog').textContent.includes('观测来源')"));
+ await command('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});await command('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+ check('Esc closes detail and restores its row focus',await evaluate("!document.querySelector('dialog').open && document.activeElement.dataset.focus==='service-dns'"));
+ await evaluate("(()=>{const i=document.querySelector('[data-control=search]');i.value='TCP';i.dispatchEvent(new Event('input',{bubbles:true}));})()");
+ check('search is scoped to group and count',await evaluate("document.querySelectorAll('.service-row').length===1 && document.querySelector('[data-service=dns-local-tcp]') && document.querySelector('.service-result-count').textContent.includes('本组 7 项')"));
+ await click('[data-focus=back-groups]');
+ check('return to groups restores originating card focus',await evaluate("location.hash==='#services' && document.activeElement.dataset.focus==='category-dns' && !document.querySelector('.service-row')"));
+ await click('[data-focus=all-checks]');
+ check('all-items is an explicit secondary view with 60 rows',await evaluate("location.hash==='#services/all' && document.querySelectorAll('.service-row').length===60"));
+ await evaluate("(()=>{const s=document.querySelector('[data-control=status]');s.value='unknown';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
+ check('global unknown filter returns two missing-evidence items',await evaluate("document.querySelectorAll('.service-row').length===2 && document.querySelector('[data-service=tailscale-path]')"));
+ await route('overview');await click('[data-quick-status=unknown]');
+ check('attention shortcut opens all-items with explicit filter',await evaluate("location.hash==='#services/all' && document.querySelector('[data-control=status]').value==='unknown' && document.querySelectorAll('.service-row').length===2"));
+ await route('services/network');
+ check('network detail has six distinct checks; extra history collapsed',await evaluate("document.querySelectorAll('.service-row').length===6 && !document.querySelector('[data-group-history]').open"));
+ await click('[data-group-history] summary');await click('[data-range="7d"]');
+ check('missing 7d history is not borrowed from 24h',await evaluate("document.querySelector('.chart-empty').textContent.includes('还没有 7 天')"));
+ await click('[data-action=refresh]');
+ check('manual refresh preserves expanded history',await evaluate("document.querySelector('[data-group-history]').open"));
+ await click('[data-range="24h"]');
+ await route('services/access');await click('[data-service=tailscale-path]');
+ check('old peer reference has no current RTT or green conclusion',await evaluate("document.querySelector('dialog .status-badge').textContent==='未知' && document.querySelector('dialog .dialog-status .mono').textContent==='—' && document.querySelector('dialog').textContent.includes('仅作参考')"));
+ await click('[data-action=close-dialog]');await scenario('healthy');await route('overview');
+ check('healthy summary still limits its conclusion to measured scope',await evaluate("document.querySelector('.stat-text').textContent.includes('已测范围内正常')"));
+ await scenario('lost');
+ check('source loss makes household groups unknown, not faults',await evaluate("document.querySelector('.stat-text').textContent.includes('观测数据缺失') && document.querySelector('[data-focus=category-network] .status-badge').textContent==='未知'"));
+ await route('services/all');
+ check('source loss revokes RTT but independent edge checks stay fresh',await evaluate("document.querySelector('[data-service=ipv4] .service-latency').textContent==='—' && document.querySelector('[data-service=headscale-base] .status-badge').textContent==='正常'"));
+ await scenario('degraded');await route('services/network');await evaluate("document.querySelector('[data-service=ipv4]').focus()");await click('[data-service=ipv4]');
+ await evaluate('window.__originalNow=Date.now;Date.now=()=>window.__originalNow()+100000');await wait(1200);
+ check('time expiry updates row and already-open detail without fake refresh',await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='未知' && document.querySelector('dialog .dialog-status .mono').textContent==='—' && document.querySelector('dialog').textContent.includes('历史上报延迟')"));
+ await click('[data-action=close-dialog]');await evaluate('Date.now=window.__originalNow');await click('[data-action=refresh]');
+ await route('paths');check('CONTROL/DATA/BUSINESS separation remains',await evaluate("document.querySelectorAll('.boundary-columns article').length===3"));
+ await route('events');await click('[data-event-filter=resolved]');check('events retain filtered empty state',await evaluate("document.querySelector('.empty-state').textContent.includes('没有事件')"));
+ for(const width of [1440,1024,768,390,320]){
+  await viewport(width);
+  for(const page of ['overview','services','services/dns','services/all','paths','events']){
+   await route(page);check(`${width}px ${page} no horizontal overflow`,await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
+   check(`${width}px ${page} visible text >=13px`,await evaluate("(()=>{const w=document.createTreeWalker(document.querySelector('#app'),NodeFilter.SHOW_TEXT);let n;while(n=w.nextNode()){if(!n.textContent.trim())continue;const e=n.parentElement,r=e.getBoundingClientRect();if(r.width&&r.height&&r.right>0&&r.bottom>0&&getComputedStyle(e).visibility==='visible'&&parseFloat(getComputedStyle(e).fontSize)<13)return false;}return getComputedStyle(document.documentElement).fontSize==='16px';})()"));
   }
-  await scenario('degraded'); await route('overview');
-  await command('Emulation.setTouchEmulationEnabled', { enabled: true });
-  await screenshot('overview-mobile.png', 390, 844);
-  check('手机视觉顺序与 DOM 阅读/键盘顺序一致', await evaluate("(() => { const tops=[...document.querySelectorAll('.overview-grid .panel')].map(el=>el.getBoundingClientRect().top);return tops.length===4 && tops.every((top,i)=>i===0||top>tops[i-1]); })()"));
-  check('触摸能力下输入至少16px且操作控件至少44px', await evaluate("matchMedia('(pointer:coarse)').matches && parseFloat(getComputedStyle(document.querySelector('[data-control=scenario]')).fontSize)>=16 && document.querySelector('.refresh-button').getBoundingClientRect().height>=44 && document.querySelector('.mobile-menu').getBoundingClientRect().width>=44"));
-  check('所有悬停样式均限定鼠标能力，不污染触摸态', await evaluate(`(() => { const bad=[]; const walk=(rules,gated=false)=>{for(const r of rules){const next=gated||(r.conditionText?.includes('hover: hover')&&r.conditionText?.includes('pointer: fine'));if(r.selectorText?.includes(':hover')&&!next)bad.push(r.selectorText);if(r.cssRules)walk(r.cssRules,next);}};for(const s of document.styleSheets)walk(s.cssRules);return bad.length===0;})()`));
-  check('允许缩放，声明视口安全区和键盘布局', await evaluate("document.querySelector('meta[name=viewport]').content.includes('viewport-fit=cover') && document.querySelector('meta[name=viewport]').content.includes('interactive-widget=resizes-content') && !/user-scalable=no|maximum-scale/.test(document.querySelector('meta[name=viewport]').content)"));
-  check('关闭的手机侧栏不进入键盘焦点序列', await evaluate("document.querySelector('.sidebar').inert"));
-  await click('[data-action="menu"]');
-  check('手机导航可展开', await evaluate("document.querySelector('.sidebar').classList.contains('is-open')"));
-  check('手机导航打开时背景不可操作且聚焦侧栏', await evaluate("document.querySelector('.workspace-body').inert && document.querySelector('.sidebar').contains(document.activeElement)"));
-  await evaluate("document.querySelector('.sidebar nav a:last-child').focus()");
-  await command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
-  await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
-  check('手机导航键盘焦点保持在抽屉内', await evaluate("document.activeElement===document.querySelector('.sidebar .brand')"));
-  await click('[data-action="close-menu"]');
-  check('手机导航遮罩可关闭', await evaluate("!document.querySelector('.sidebar').classList.contains('is-open')"));
-  check('手机导航关闭后焦点回到菜单按钮', await evaluate("document.activeElement===document.querySelector('[data-action=menu]') && !document.querySelector('.workspace-body').inert"));
-  await command('Emulation.setTouchEmulationEnabled', { enabled: false });
-  await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
-  await evaluate("document.querySelector('[data-action=refresh]').focus()");
-  await command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-  check('键盘操作无过渡动画，反馈即时', await evaluate("document.documentElement.dataset.input==='keyboard' && getComputedStyle(document.querySelector('[data-action=refresh]')).transitionDuration==='0s'"));
-  await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
-  await command('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
-  await evaluate("document.documentElement.dataset.input='pointer'");
-  check('减少动效偏好取消按钮位移动画', await evaluate("parseFloat(getComputedStyle(document.querySelector('[data-action=refresh]')).transitionDuration)<.001"));
-  await command('Emulation.setEmulatedMedia', { features: [] });
-  await command('Emulation.setDeviceMetricsOverride', { width: 720, height: 550, deviceScaleFactor: 1, mobile: false });
-  for (const page of ['overview', 'services', 'paths', 'events']) { await route(page); check(`200%缩放等效720px ${page} 重排无溢出`, await evaluate('document.documentElement.scrollWidth<=innerWidth+1')); }
-  await route('paths'); await screenshot('paths-desktop.png', 1440, 1100);
-  await route('services'); await click('[data-service="ipv6"]'); await screenshot('service-detail.png', 1440, 1100);
-  check('页面无浏览器运行错误', errors.length === 0);
-  check('仅请求本地静态资产，无设备/API/外部请求', [...urls].every((url) => url.startsWith(origin) || url.startsWith('data:')));
-  console.log(`\n${passed} browser checks passed. Screenshots: frontend/artifacts/`);
-} finally {
-  if (ws?.readyState === WebSocket.OPEN) { try { await command('Browser.close'); } catch {} ws.close(); }
-  server.kill();
-  chrome.kill();
-  await wait(300);
-  await rm(profile, { recursive: true, force: true, maxRetries: 3 }).catch(() => {});
+ }
+ await viewport(390,844);await command('Emulation.setTouchEmulationEnabled',{enabled:true});await route('overview');await screenshot('grouped-overview-mobile.png',390,844);
+ check('mobile cards follow DOM order and have usable touch height',await evaluate("(()=>{const cards=[...document.querySelectorAll('.check-group-card')];const tops=cards.map(c=>c.getBoundingClientRect().top);return cards.every(c=>c.getBoundingClientRect().height>=44)&&tops.every((n,i)=>i===0||n>tops[i-1]);})()"));
+ await route('services/dns');await screenshot('grouped-dns-mobile.png',390,844);
+ check('touch inputs >=16px and zoom/safe-area allowed',await evaluate("parseFloat(getComputedStyle(document.querySelector('[data-control=search]')).fontSize)>=16 && !/user-scalable=no|maximum-scale/.test(document.querySelector('meta[name=viewport]').content) && document.querySelector('meta[name=viewport]').content.includes('viewport-fit=cover')"));
+ check('hover rules all gated by mouse capability',await evaluate("(()=>{let bad=0;function walk(rules,g=false){for(const r of rules){const n=g||(r.conditionText?.includes('hover: hover')&&r.conditionText?.includes('pointer: fine'));if(r.selectorText?.includes(':hover')&&!n)bad++;if(r.cssRules)walk(r.cssRules,n);}}for(const s of document.styleSheets)walk(s.cssRules);return !bad;})()"));
+ check('closed mobile nav is inert',await evaluate("document.querySelector('.sidebar').inert"));await click('[data-action=menu]');
+ check('mobile menu locks background and owns focus',await evaluate("document.querySelector('.workspace-body').inert && document.querySelector('.sidebar').contains(document.activeElement)"));
+ await evaluate("document.querySelector('.sidebar nav a:last-child').focus()");await command('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});await command('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9});
+ check('menu Tab wraps inside drawer',await evaluate("document.activeElement===document.querySelector('.sidebar .brand')"));await click('[data-action=close-menu]');
+ check('closing nav restores menu focus',await evaluate("document.activeElement===document.querySelector('[data-action=menu]') && !document.querySelector('.workspace-body').inert"));
+ await command('Emulation.setTouchEmulationEnabled',{enabled:false});await viewport(1440);
+ await evaluate("document.querySelector('[data-action=refresh]').focus()");await command('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});await command('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+ check('keyboard activation has immediate feedback, no transition',await evaluate("document.documentElement.dataset.input==='keyboard' && getComputedStyle(document.querySelector('[data-action=refresh]')).transitionDuration==='0s'"));
+ await command('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});await evaluate("document.documentElement.dataset.input='pointer'");
+ check('reduced motion removes press transition',await evaluate("parseFloat(getComputedStyle(document.querySelector('[data-action=refresh]')).transitionDuration)<.001"));
+ await command('Emulation.setEmulatedMedia',{features:[]});await viewport(720,550);
+ for(const page of ['overview','services/dns','services/all','paths','events']){await route(page);check(`720px zoom-equivalent ${page} reflows`,await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));}
+ await route('services/access');await click('[data-service=tailscale-path]');await screenshot('grouped-reference-detail.png',1440,1000);
+ check('no JS runtime errors',errors.length===0);check('no device/API/external requests in synthetic preview',[...urls].every(url=>url.startsWith(origin)||url.startsWith('data:')));
+ console.log(`\n${passed} grouped browser checks passed; generated screenshots only.`);
+}finally{
+ if(ws?.readyState===WebSocket.OPEN){try{await command('Browser.close');}catch{}ws.close();}
+ server.kill();chrome.kill();await wait(300);await rm(profile,{recursive:true,force:true,maxRetries:3}).catch(()=>{});
 }
