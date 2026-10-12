@@ -38,7 +38,8 @@ func safePublicText(text string) bool {
 
 var statuses = map[string]bool{"healthy": true, "degraded": true, "down": true, "unknown": true, "untested": true, "maintenance": true}
 var summaries = map[string]string{
-	"ok": "检测符合预期；结论仅限所列范围。", "http_error": "请求未得到预期响应。", "dns_error": "DNS 查询未得到预期应答。",
+	"tsmp_ok": "TSMP 数据通道得到匹配应答；只覆盖网关到指定客户端，不证明子网、业务或直连路径。",
+	"ok":      "检测符合预期；结论仅限所列范围。", "http_error": "请求未得到预期响应。", "dns_error": "DNS 查询未得到预期应答。",
 	"health_error": "本机健康接口报告异常。", "space_warning": "存储空间达到预警阈值。", "space_critical": "存储空间达到高风险阈值。",
 	"probe_error": "检测未完成；不据此推断全部网络故障。", "unconfigured": "尚未配置此项检测。", "pending": "连续失败确认中。", "recovering": "响应已恢复，等待连续成功确认。",
 	"untested": "尚未执行此范围的业务验证。", "stale": "没有新鲜观测；未知不代表服务故障。",
@@ -51,6 +52,11 @@ var summaries = map[string]string{
 	"control_stale": "近期未观察到新控制消息；当前控制通信未知。", "control_unavailable": "本机控制证据不可读取或客户端尚未运行；不据此判断远端故障。",
 	"control_warning": "近期观察到控制消息，但本地客户端仍报告健康警告。",
 	"tcp_error":       "指定 TCP 端口或协议握手未符合预期。", "path_failed": "既有节点探测中存在新鲜失败记录；不代表全部链路故障。",
+	"tsmp_error":       "本机到所选 Tailscale 节点的一次 TSMP 探测未得到匹配应答；不代表该节点其他路径、子网或业务故障。",
+	"tsmp_unavailable": "本机 Tailscale 状态或 TSMP 测量不可用；无法据此判断节点状态。",
+	"tsmp_self":        "配置目标指向本机自身；不执行自测。",
+	"tsmp_absent":      "配置目标不是本机当前已知的 Tailscale 节点；状态未知。",
+	"tsmp_offline":     "配置目标节点当前离线；未发送 TSMP 探测。",
 }
 
 type Config struct {

@@ -71,6 +71,8 @@ func Probe(ctx context.Context, c Check) status.Observation {
 		return tcpProbe(ctx, c)
 	case "peer-pinger", "peer-poll":
 		return peerProbe(c)
+	case "tailscale-tsmp":
+		return tsmpProbe(ctx, c)
 	case "untested":
 		result.Status = "untested"
 		result.Code = "untested"

@@ -37,7 +37,7 @@ await Promise.all(agentTokens.slice(1).map((credential, i) => writeFile(path.joi
 await writeFile(configFile, JSON.stringify({
   listen: `127.0.0.1:${backendPort}`, database: path.join(temp, 'state.sqlite'), retentionDays: 30,
   agents: agentTokens.map((_, i) => ({ id: i === 0 ? 'home' : `source-fixture-${i}`, label: `独立来源测试夹具 ${i + 1}`, kind: 'family', secretFile: i === 0 ? secretFile : path.join(temp, `credential-${i}`), intervalSeconds: 30, staleAfterSeconds: 90 })),
-  services: expandedServices.map((entry) => ({ id: entry.id, name: entry.name, group: entry.group, subtitle: '本地测试夹具，非真实部署', collectorId: 'home', scope: '本机 Go/SQLite 集成测试输入；不代表家庭业务', staleAfterSeconds: 90 })),
+  services: expandedServices.map((entry) => ({ id: entry.id, name: entry.name, group: entry.group, subtitle: '本地测试夹具，非真实部署', collectorId: 'home', scope: entry.id === 'tailscale-path' ? '本机 TSMP 测试夹具；不证明子网、应用或直连路径' : '本机 Go/SQLite 集成测试输入；不代表家庭业务', staleAfterSeconds: 90 })),
 }), { mode: 0o600 });
 let backend, server, chrome, ws;
 let seq = 0, passed = 0;
@@ -153,6 +153,11 @@ try {
   await sample('ipv4'); await sample('ipv4'); await refresh();
   check('连续成功后恢复', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='正常'"));
   await click('[data-service=ipv4]');
+  await click('[data-action=close-dialog]'); await route('observations/ipv4');
+  await retry(async () => assert.ok(await evaluate("document.querySelectorAll('.observation-row').length>=4")));
+  check('真实逐次记录保留单次失败，不由当前恢复覆盖', await evaluate("document.querySelector('.observation-summary').textContent.includes('3 单次失败') && document.querySelector('.observation-panel .panel-heading').textContent.includes('不是已确认故障') && document.querySelector('.observation-row')"));
+  check('原始记录经已认证历史读路由，未给浏览器采集凭据', [...urls].some(url => url.includes('/api/v1/history?') && url.includes('resolution=raw')));
+  await route('services/all'); await click('[data-service=ipv4]');
   backend.kill(); await wait(300);
   await click('[data-action=refresh]');
   await retry(async () => assert.equal(await evaluate("document.querySelector('.demo-badge').textContent"), '接口不可达'));
@@ -166,10 +171,14 @@ try {
   await retry(async () => assert.equal((await fetch(`${backendOrigin}/healthz`)).status, 200));
   await refresh();
   check('后端重启后读取原 SQLite，不丢状态', await evaluate("document.querySelector('[data-service=ipv4] .status-badge').textContent==='正常'"));
+  await sample('tailscale-path', 'healthy', { code: 'tsmp_ok', latencyMs: 16, pathMode: 'unknown' });
+  await sample('tailscale-path', 'healthy', { code: 'tsmp_ok', latencyMs: 17, pathMode: 'unknown' }); await refresh();
+  await route('paths');
+  check('TSMP 数据通道可达与直连路径未知分开呈现', await evaluate("document.querySelector('.path-observations [data-service=tailscale-path] .status-badge').textContent==='可达' && document.querySelector('.path-observations [data-service=tailscale-path]').textContent.includes('直连／中继路径未判定')"));
   await route('events'); check('后端重启后持久事件仍保留', await evaluate("document.querySelectorAll('.incident').length>0"));
   for (const width of [1440, 1024, 768, 390, 320]) {
     await command('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 });
-    for (const page of ['overview', 'services', 'services/network', 'services/all', 'paths', 'events']) { await evaluate(`location.hash=${JSON.stringify(page)}`); await wait(80); check(`${width}px ${page} 61项真实接口模式无横向溢出`, await evaluate('document.documentElement.scrollWidth<=innerWidth+1')); }
+    for (const page of ['overview', 'services', 'services/network', 'services/all', 'paths', 'observations', 'events']) { await evaluate(`location.hash=${JSON.stringify(page)}`); await wait(80); check(`${width}px ${page} 61项真实接口模式无横向溢出`, await evaluate('document.documentElement.scrollWidth<=innerWidth+1')); }
     if (width === 390) { await evaluate("location.hash='services/all'"); await wait(80); check('完整列表保持 61 项、长名称与筛选计数可读', await evaluate("document.querySelectorAll('.service-row').length===61 && document.querySelector('.service-result-count').textContent.includes('61 项匹配')")); }
   }
   check('无 JavaScript 运行错误', errors.length === 0);

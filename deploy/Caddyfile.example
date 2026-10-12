@@ -20,7 +20,7 @@
         reverse_proxy {$BACKEND_UPSTREAM:127.0.0.1:18080}
     }
     @read {
-        path /api/v1/status /api/v1/history /api/v1/incidents
+        path /api/v1/status /api/v1/history /api/v1/incidents /api/v1/observations
         method GET HEAD
     }
     handle @read {

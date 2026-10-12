@@ -6,6 +6,7 @@ import { createClock, emptyLiveSnapshot, fetchSnapshot, unavailableSnapshot } fr
 import { trendSegments } from './trend.js';
 import { filterServices, exitBaseline, evidencePresentation } from './presentation.js';
 import { CHECK_GROUPS, groupServices, summarizeCheckGroups, parseCheckRoute } from './check-groups.js';
+import { validateObservations, observationCounts, observationGaps, demoObservations, beijingInput, parseBeijingInput } from './observations.js';
 
 // Browsers read same-origin summaries only. Device interfaces and credentials stay private.
 const app = document.querySelector('#app');
@@ -14,6 +15,7 @@ const NAV = [
   { id: 'overview', label: '网络总览', icon: 'grid', caption: 'OVERVIEW' },
   { id: 'services', label: '检测分组', icon: 'layers', caption: 'CHECK GROUPS' },
   { id: 'paths', label: '连接路径', icon: 'route', caption: 'CONNECTIVITY' },
+  { id: 'observations', label: '逐次观测记录', icon: 'activity', caption: 'RAW OBSERVATIONS' },
   { id: 'events', label: '事件时间线', icon: 'clock', caption: 'TIMELINE' },
 ];
 const STATUS = {
@@ -55,7 +57,7 @@ const icon = (name, extra = '') => `<svg class="icon ${extra}" viewBox="0 0 24 2
 const fmt = (value, options) => value && Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', ...options }).format(new Date(value)) : '—';
 const time = (value) => fmt(value, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 const evidenceTime = (value) => fmt(value, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-const dateTime = (value) => fmt(value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+const dateTime = (value) => fmt(value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 const percent = (value) => value === null || value === undefined ? '—' : `${Number(value).toFixed(1)}%`;
 const statusOf = (status) => STATUS[status] || STATUS.unknown;
 const badge = (status, text) => `<span class="status-badge ${statusOf(status).class}"><span class="status-dot"></span>${e(text || statusOf(status).label)}</span>`;
@@ -75,6 +77,9 @@ const getNow = () => isDemo ? Date.now() : liveClock();
 let apiState = isDemo ? 'demo' : 'loading';
 let fetching = false;
 let history7d = null;
+let observationPage = null, observationError = false, observationLoading = false;
+let observationRequest = 0, observationAbort = null;
+let observationService = 'ipv4', observationHours = 1, observationFrom = '', observationTo = '', observationCustom = false;
 let view = deriveView(snapshot, getNow());
 let toastTimer;
 let dialogReturnFocus = null;
@@ -112,7 +117,7 @@ function shell(content) {
   </aside>
   ${state.menuOpen ? '<button class="menu-scrim" data-action="close-menu" aria-label="关闭导航"></button>' : ''}
   <div class="workspace-body" ${mobileQuery.matches && state.menuOpen ? 'inert' : ''}><header class="topbar"><div class="breadcrumb"><button class="icon-button mobile-menu" data-action="menu" data-focus="menu" aria-label="切换导航" aria-expanded="${state.menuOpen}">${icon('grid')}</button><span class="breadcrumb-home">工作空间</span><span class="slash">/</span><span>${active.label}</span></div><div class="topbar-right"><span class="timezone mono">UTC+8</span><span class="demo-badge" data-mode="${isDemo ? 'demo' : apiState}"><span></span>${isDemo ? '演示模式' : apiState === 'error' ? '接口不可达' : apiState === 'loading' ? '连接中' : '真实观测'}</span><span class="avatar" aria-label="只读工作空间">B</span></div></header>
-  <main id="main-content" tabindex="-1"><section class="page-heading"><div><div class="eyebrow">${active.caption}<span class="eyebrow-line"></span>HOME NETWORK</div><h1>${e(pageTitle())}</h1><p>${{ overview: '先选你关心的分组，再展开检测与证据。', services: state.category ? selectedGroup()?.description ?? '跨分组搜索；检测结论仍逐项独立判断。' : '按用途整理，不再把所有检测铺在一起。', paths: '把控制连接、数据链路和业务访问分开看。', events: '留下证据，才能看清每一次中断与恢复。' }[state.page]}</p></div><div class="heading-actions">${isDemo ? `<label class="scenario-control"><span class="sr-only">演示场景</span><select data-control="scenario" data-focus="scenario" aria-label="演示场景">${SCENARIOS.map((item) => `<option value="${item.id}" ${item.id === state.scenario ? 'selected' : ''}>${e(item.label.replace('（演示）', ''))}</option>`).join('')}</select>${icon('down')}</label>` : ''}<button class="button refresh-button" data-action="refresh" data-focus="refresh">${icon('refresh')}<span>${isDemo ? '刷新演示' : '刷新快照'}</span></button></div></section>
+  <main id="main-content" tabindex="-1"><section class="page-heading"><div><div class="eyebrow">${active.caption}<span class="eyebrow-line"></span>HOME NETWORK</div><h1>${e(pageTitle())}</h1><p>${{ overview: '先选你关心的分组，再展开检测与证据。', services: state.category ? selectedGroup()?.description ?? '跨分组搜索；检测结论仍逐项独立判断。' : '按用途整理，不再把所有检测铺在一起。', paths: '把控制连接、数据链路和业务访问分开看。', observations: '单次失败也留下记录；与当前确认状态分开。', events: '留下证据，才能看清每一次中断与恢复。' }[state.page]}</p></div><div class="heading-actions">${isDemo ? `<label class="scenario-control"><span class="sr-only">演示场景</span><select data-control="scenario" data-focus="scenario" aria-label="演示场景">${SCENARIOS.map((item) => `<option value="${item.id}" ${item.id === state.scenario ? 'selected' : ''}>${e(item.label.replace('（演示）', ''))}</option>`).join('')}</select>${icon('down')}</label>` : ''}<button class="button refresh-button" data-action="refresh" data-focus="refresh">${icon('refresh')}<span>${isDemo ? '刷新演示' : '刷新快照'}</span></button></div></section>
   <div class="demo-notice">${icon('info')}<span>${isDemo ? '当前为合成演示快照，不代表真实网络状态。' : apiState === 'error' ? '数据服务不可达：当前显示未知，保留已有历史。' : apiState === 'loading' ? '正在连接数据服务；尚未取得真实观测。' : '真实观测摘要；本机健康不代表公网回家、播放或下载已验证。'}<span class="demo-notice-extra">${isDemo ? '没有连接设备，也没有登录后的管理数据。' : '未知不等于家庭业务故障；检测结论仅覆盖各自范围。'}</span></span><span class="snapshot-time mono">快照 ${time(snapshot.sampledAt)}</span></div>
   ${content}
   <footer class="page-footer"><span><span class="footer-mark">b.</span>状态有边界，观测有时间。</span><span>${isDemo ? '合成数据 · 北京时间 · 无后端连接' : '只读摘要 · 北京时间 · 隐藏管理数据'}</span></footer></main></div>`;
@@ -170,8 +175,9 @@ function pathPanel(full = false) {
   const control = service('headscale-control');
   const path = service('tailscale-path');
   const tunnel = service('tunnel-ready');
-  const pathLabel = path.stale ? '当前路径未知' : isDemo ? path.status === 'healthy' ? '本轮已验证直连' : '本轮仅中继可达' : ({ direct: '探测路径为直接连接', relay: '探测路径经过中继', mixed: '已观察到混合路径' }[path.pathMode] ?? '暂无新鲜节点探测');
-  const pathBadge = path.stale || (!isDemo && path.pathMode === 'unknown') ? '未知' : isDemo ? path.status === 'healthy' ? '直连' : '中继' : ({ direct: '直连', relay: '中继', mixed: '混合' }[path.pathMode] ?? '未知');
+  const tsmp = !isDemo && !path.stale && path.scope?.includes('TSMP') && path.summary?.includes('TSMP');
+  const pathLabel = tsmp ? path.status === 'healthy' ? '指定客户端 TSMP 可达；直连／中继路径未判定' : path.summary : path.stale ? '当前路径未知' : isDemo ? path.status === 'healthy' ? '本轮已验证直连' : '本轮仅中继可达' : ({ direct: '探测路径为直接连接', relay: '探测路径经过中继', mixed: '已观察到混合路径' }[path.pathMode] ?? '暂无新鲜节点探测');
+  const pathBadge = tsmp ? path.status === 'healthy' ? '可达' : statusOf(path.status).label : path.stale || (!isDemo && path.pathMode === 'unknown') ? '未知' : isDemo ? path.status === 'healthy' ? '直连' : '中继' : ({ direct: '直连', relay: '中继', mixed: '混合' }[path.pathMode] ?? '未知');
   const pathTone = pathBadge === '未知' ? 'unknown' : path.status;
   return `<section class="panel path-panel"><div class="panel-heading"><div><h2>回家链路${icon('route', 'heading-icon')}</h2><p>不同连接，独立判断</p></div>${full ? `<span class="tiny-label">${isDemo ? 'DEMO TOPOLOGY' : '结构示意 · 非逐节点验证'}</span>` : '<a href="#paths" class="text-link" aria-label="查看连接路径">' + icon('diagonal') + '</a>'}</div>${full ? topology() : ''}<div class="path-observations"><button class="path-observation" data-service="headscale-control" data-focus="path-headscale-control"><span class="path-observation-icon">${icon('link')}</span><div><strong>近期控制通信</strong><span>${control.status === 'untested' ? '尚未接入控制消息观测' : control.stale || control.status === 'unknown' ? '暂无新鲜控制消息证据' : control.status === 'healthy' ? '近期有控制消息；不等于完全同步' : '本地客户端健康警告需关注'}</span>${evidenceLine(control)}</div>${badge(control.status)}</button><button class="path-observation" data-service="tailscale-path" data-focus="path-tailscale-path"><span class="path-observation-icon">${icon('route')}</span><div><strong>数据链路</strong><span>${pathLabel}</span>${evidenceLine(path)}</div>${badge(pathTone, pathBadge)}</button><button class="path-observation" data-service="tunnel-ready" data-focus="path-tunnel-ready"><span class="path-observation-icon">${icon('cloud')}</span><div><strong>隧道就绪</strong><span>${tunnel.stale ? '尚无新鲜就绪观测' : isDemo ? '合成样本：4 条就绪连接' : tunnel.readyConnections == null ? '就绪接口响应；连接数量尚无观测' : `${tunnel.readyConnections} 条就绪连接`}</span></div>${badge(tunnel.status)}</button></div><div class="panel-footnote">${icon('info')}链路可达不代表家庭应用已验证可用。</div></section>`;
 }
@@ -228,6 +234,29 @@ function pathsPage() {
   const unknown = service('tailscale-path').stale || service('tailscale-path').status === 'unknown';
   return `<div class="paths-layout">${pathPanel(true)}<section class="panel evidence-panel"><div class="panel-heading"><div><h2>出口路径对照</h2><p>每种路径有独立观测，不自动推断根因</p></div>${icon('globe', 'heading-icon')}</div><div class="route-list">${[{ id: 'ipv4', name: isDemo ? '真实地址直出' : '指定 IPv4 目标', route: '家庭入口 → 网关 → IPv4 公网', note: '与 DNS / Fake-IP 路径分离' }, { id: 'ipv6', name: 'IPv6 独立出口', route: '家庭入口 → 网关 → IPv6 公网', note: '异常不连带判 IPv4 故障' }, { id: 'proxy', name: '明确代理出口', route: '家庭入口 → 代理 → 目标服务', note: isDemo ? '仅表示合成路径，并非真实抓包证据' : '仅代表指定代理请求，非流量抓包证明' }].map((item, index) => `<button class="route-card" data-service="${item.id}" data-focus="route-${item.id}"><span class="route-number mono">0${index + 1}</span><div><div class="route-title"><strong>${item.name}</strong>${badge(service(item.id).status)}</div><p class="route-chain">${item.route}</p><small>${item.note}</small></div>${icon('diagonal')}</button>`).join('')}</div><div class="evidence-note">${icon('info')}没有实测路径依据时，只能显示配置声明，不能把请求成功当作路由证明。</div></section></div><section class="panel path-boundaries"><div class="panel-heading"><div><h2>三个问题，三个答案</h2><p>${isDemo ? '演示分层判定' : '基于独立观测'}，业务结论保持独立</p></div></div><div class="boundary-columns"><article><span class="mono">01 / CONTROL</span><h3>控制端正常吗？</h3>${badge(service('headscale-base').status)}<p>基础接口能否响应；不证明家庭控制会话同步正常。</p></article><article><span class="mono">02 / DATA</span><h3>节点之间可达吗？</h3>${badge(service('tailscale-path').status)}<p>${unknown ? '缺少新鲜的链路证据，当前路径未知。' : isDemo ? '合成节点探测有响应；不证明家庭子网或 ACL 正常。' : '仅覆盖该节点探测；不证明家庭子网、ACL 或业务正常。'}</p></article><article><span class="mono">03 / BUSINESS</span><h3>应用真的可用吗？</h3>${badge('untested')}<p>尚无外部端到端业务探针，不宣称用户必然可以回家。</p></article></div></section>${boundaryCard()}`;
 }
+function observationsPage() {
+  const counts = observationCounts(observationPage?.observations ?? []), gaps = observationGaps(observationPage?.observations ?? []);
+  const choices = view.services.map((item) => `<option value="${e(item.id)}" ${item.id === observationService ? 'selected' : ''}>${e(item.name)}</option>`).join('');
+  return `<section class="panel observation-panel"><div class="panel-heading"><div><h2>按时段查看每次检测</h2><p>北京时间 · 原始结果，不是已确认故障；补传和证据时间单独标注。</p></div></div><div class="observation-controls"><label>检测项目<select data-control="observation-service" data-focus="observation-service">${choices}</select></label><label>时段<select data-control="observation-hours" data-focus="observation-hours">${[1, 6, 24, 168].map((h) => `<option value="${h}" ${observationHours === h ? 'selected' : ''}>最近 ${h === 168 ? '7 天' : h + ' 小时'}</option>`).join('')}</select></label><label>开始（北京时间）<input type="datetime-local" step="1" data-control="observation-from" data-focus="observation-from" value="${beijingInput(observationFrom)}"></label><label>结束（北京时间）<input type="datetime-local" step="1" data-control="observation-to" data-focus="observation-to" value="${beijingInput(observationTo)}"></label><button class="button" data-action="observation-refresh" data-focus="observation-refresh">${icon('search')}查询时段</button></div><p class="observation-note">检测按各自周期持续运行，不能保证捕获间隔内的瞬时问题。30 分钟趋势只是抽样；这里显示单次记录，不据此计算持续时间 SLA。任务与控制检测的观测时间可能是证据窗口起点，而非每轮读取时间。</p>${observationError ? '<div class="empty-state"><h3>逐次记录暂时不可读取</h3><p>没有切换为演示或正常结果；请重试。</p></div>' : observationLoading && !observationPage ? '<div class="empty-state"><h3>正在读取逐次记录…</h3></div>' : observationPage ? `<div class="observation-summary"><span>${e(dateTime(observationPage.from))} — ${e(dateTime(observationPage.to))}</span><span>本页 ${observationPage.observations.length} 条 · ${counts.down} 单次失败 · ${counts.unknown} 未知 · ${counts.replay} 补传</span></div>${gaps.length ? `<details class="observation-gaps"><summary>本页有 ${gaps.length} 段证据空缺（不等于故障）</summary>${gaps.slice(0, 20).map((g) => `<p>${dateTime(g.from)} — ${dateTime(g.to)}：前一结果已过期，下一条尚未出现。</p>`).join('')}${gaps.length > 20 ? '<p>仅列前 20 段；没有把缺口补成正常。</p>' : ''}</details>` : ''}<div class="observation-list">${observationPage.observations.map((row) => `<article class="observation-row"><div><time class="mono">${row.observedAt ? dateTime(row.observedAt) : '来源时间无法定位'}</time><small>${row.replay ? '历史补传 · ' : ''}接收 ${time(row.receivedAt)}${row.evidence ? ` · 源时钟 ${e(evidenceTime(row.evidence.at))}${row.evidence.historical ? '（仅作参考）' : ''}` : ''}</small></div><div>${badge(row.status, row.status === 'down' ? '单次失败' : undefined)}<span class="mono">${formatLatency(row.latencyMs)}</span></div><p>${e(row.summary)}</p></article>`).join('') || '<div class="empty-state"><h3>此时段没有观测记录</h3><p>没有结果不等于正常；历史自采集开始，不补造。</p></div>'}</div><div class="observation-pagination"><span>${observationPage.truncated ? '本页未覆盖整个时段；可继续查看较早记录。' : '已到本次查询的末页。'}无法定位来源时间的补传排列在有时间的记录之后。</span>${observationPage.nextCursor ? '<button class="button" data-action="observation-older" data-focus="observation-older">较早一页' + icon('arrow') + '</button>' : ''}</div>` : '<div class="empty-state"><h3>请选择检测项目查看记录</h3></div>'}</section>`;
+}
+async function loadObservations(older = false) {
+  const request = ++observationRequest;
+  observationAbort?.abort(); const controller = new AbortController(); observationAbort = controller;
+  observationLoading = true; observationError = false;
+  if (!older && !observationCustom) { observationTo = new Date(getNow()).toISOString(); observationFrom = new Date(getNow() - observationHours * 3600000).toISOString(); observationPage = null; }
+  const params = new URLSearchParams({ service: observationService, from: observationFrom, to: observationTo, resolution: 'raw' });
+  if (older && observationPage?.nextCursor) params.set('cursor', observationPage.nextCursor);
+  render({ preserveFocus: true });
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    let result;
+    if (isDemo) result = demoObservations(observationService, observationFrom, observationTo);
+    else { const response = await fetch('/api/v1/history?' + params, { cache: 'no-store', signal: controller.signal }); if (!response.ok) throw new Error('observations unavailable'); result = await response.json(); }
+    if (request !== observationRequest) return;
+    observationPage = validateObservations(result, observationService);
+  } catch { if (request === observationRequest) observationError = true; }
+  finally { clearTimeout(timeout); if (request === observationRequest) { observationLoading = false; render({ preserveFocus: true }); } }
+}
 function eventsPage() {
   return `<div class="event-summary"><div class="event-summary-copy">${icon('clock')}<span>每次异常都值得记录，但不是每条错误都代表一次独立故障。</span></div><span class="mono">${view.incidents.filter((entry) => entry.status === 'investigating').length} OBSERVING · ${view.incidents.filter((entry) => entry.status === 'resolved').length} RESOLVED</span></div>${incidentPanel(false)}${boundaryCard()}`;
 }
@@ -239,7 +268,7 @@ function render({ preserveFocus = false } = {}) {
   const selectionEnd = active instanceof HTMLInputElement ? active.selectionEnd : null;
   view = deriveView(snapshot, getNow());
   previousSignature = view.services.map((entry) => entry.status).join(',') + view.collector.stale + view.collectors.map((entry) => entry.stale).join(',');
-  app.innerHTML = shell({ overview, services: servicesPage, paths: pathsPage, events: eventsPage }[state.page]());
+  app.innerHTML = shell({ overview, services: servicesPage, paths: pathsPage, observations: observationsPage, events: eventsPage }[state.page]());
   document.body.classList.toggle('menu-open', mobileQuery.matches && state.menuOpen);
   document.title = `${pageTitle()} · Bastion`;
   if (focusId) {
@@ -259,7 +288,7 @@ function openDetails(id) {
   const stats = getHistoryStats(entry.history);
   const evidence = evidencePresentation(entry);
   const meaning = entry.status === 'untested' ? '尚未接入端到端业务检测。没有结果，不等于正常，也不等于故障。' : entry.stale ? '这条观测已经过期。历史上报值保留供参考，当前状态只能显示未知。' : entry.summary.replace('合成演示数据：', '');
-  dialog.innerHTML = `<div class="dialog-top"><span class="eyebrow">OBSERVATION DETAILS</span><button class="icon-button" data-action="close-dialog" aria-label="关闭详情">${icon('close')}</button></div><div class="dialog-identity"><span class="dialog-icon">${icon(SERVICE_ICONS[id])}</span><div><h2 id="dialog-title">${e(entry.name)}</h2><p>${e(entry.scope)}</p></div></div><div class="dialog-status">${badge(entry.status)}<span class="mono">${!entry.stale && entry.usagePercent != null ? percent(entry.usagePercent) + ' 使用率' : formatLatency(entry.latencyMs)}</span></div><p class="dialog-summary">${e(meaning)}</p><dl class="detail-grid"><div><dt>观测来源</dt><dd>${e(entry.probeLabel)}</dd></div><div><dt>最近观测 · 北京时间</dt><dd class="mono">${dateTime(entry.observedAt)}<small>${entry.status === 'untested' ? '未产生业务测试结果' : entry.stale ? '超过有效期 · 不是当前结果' : isDemo ? '快照内结果 · 不代表真实状态' : '真实观测 · 结论仅限此检测范围'}</small></dd></div>${evidence ? `<div><dt>来源证据时间 · 北京时间</dt><dd class="mono">${e(evidenceTime(evidence.at))}<small>源主机时钟记录，不用于计算当前新鲜度</small></dd></div><div><dt>证据参考</dt><dd>${e(evidence.label)} · ${e(evidence.qualifier)}<small>不替代当前状态与检测范围</small></dd></div>` : ''}<div><dt>24h 可用率</dt><dd class="mono">${percent(stats.uptimePercent)}<small>分母：${stats.observedCount} 个已测样本</small></dd></div><div><dt>24h 数据覆盖率</dt><dd class="mono">${stats.coverageRatio === null ? '—' : percent(stats.coverageRatio * 100)}<small>已测 / 非维护样本</small></dd></div>${entry.stale && entry.status !== 'untested' ? `<div><dt>历史上报状态</dt><dd>${statusOf(entry.reportedStatus).label}<small>不用于当前结论</small></dd></div><div><dt>历史上报延迟</dt><dd class="mono">${formatLatency(entry.reportedLatencyMs)}<small>不作为当前延迟</small></dd></div>` : ''}</dl><div class="dialog-history"><span class="tiny-label">24H SAMPLE HISTORY</span>${historyStrip(entry)}<div class="history-caption"><span>24h 前</span><span>快照时间</span></div></div><div class="detail-limits"><h3>检测边界</h3>${entry.detail.filter((row) => ['结论限制', '补充限制'].includes(row.label)).map((row) => `<p>${icon('info')}${e(row.value)}</p>`).join('')}</div><div class="dialog-footer">${icon('shield')}${isDemo ? '仅合成公开摘要，不包含真实节点、地址或管理数据。' : '仅公开脱敏摘要；不含设备地址、采集凭据或原始日志。'}</div>`;
+  dialog.innerHTML = `<div class="dialog-top"><span class="eyebrow">OBSERVATION DETAILS</span><button class="icon-button" data-action="close-dialog" aria-label="关闭详情">${icon('close')}</button></div><div class="dialog-identity"><span class="dialog-icon">${icon(SERVICE_ICONS[id])}</span><div><h2 id="dialog-title">${e(entry.name)}</h2><p>${e(entry.scope)}</p></div></div><div class="dialog-status">${badge(entry.status)}<span class="mono">${!entry.stale && entry.usagePercent != null ? percent(entry.usagePercent) + ' 使用率' : formatLatency(entry.latencyMs)}</span></div><p class="dialog-summary">${e(meaning)}</p><dl class="detail-grid"><div><dt>观测来源</dt><dd>${e(entry.probeLabel)}</dd></div><div><dt>最近观测 · 北京时间</dt><dd class="mono">${dateTime(entry.observedAt)}<small>${entry.status === 'untested' ? '未产生业务测试结果' : entry.stale ? '超过有效期 · 不是当前结果' : isDemo ? '快照内结果 · 不代表真实状态' : '真实观测 · 结论仅限此检测范围'}</small></dd></div>${evidence ? `<div><dt>来源证据时间 · 北京时间</dt><dd class="mono">${e(evidenceTime(evidence.at))}<small>源主机时钟记录，不用于计算当前新鲜度</small></dd></div><div><dt>证据参考</dt><dd>${e(evidence.label)} · ${e(evidence.qualifier)}<small>不替代当前状态与检测范围</small></dd></div>` : ''}<div><dt>24h 可用率</dt><dd class="mono">${percent(stats.uptimePercent)}<small>分母：${stats.observedCount} 个已测样本</small></dd></div><div><dt>24h 数据覆盖率</dt><dd class="mono">${stats.coverageRatio === null ? '—' : percent(stats.coverageRatio * 100)}<small>已测 / 非维护样本</small></dd></div>${entry.stale && entry.status !== 'untested' ? `<div><dt>历史上报状态</dt><dd>${statusOf(entry.reportedStatus).label}<small>不用于当前结论</small></dd></div><div><dt>历史上报延迟</dt><dd class="mono">${formatLatency(entry.reportedLatencyMs)}<small>不作为当前延迟</small></dd></div>` : ''}</dl><div class="dialog-history"><span class="tiny-label">24H SAMPLE HISTORY</span>${historyStrip(entry)}<div class="history-caption"><span>24h 前</span><span>快照时间</span></div></div><div class="detail-limits"><h3>检测边界</h3>${entry.detail.filter((row) => ['结论限制', '补充限制'].includes(row.label)).map((row) => `<p>${icon('info')}${e(row.value)}</p>`).join('')}</div><div class="dialog-history-link"><a href="#observations/${e(id)}" class="text-link">${icon('activity')}查看逐次观测与短暂失败${icon('arrow')}</a></div><div class="dialog-footer">${icon('shield')}${isDemo ? '仅合成公开摘要，不包含真实节点、地址或管理数据。' : '仅公开脱敏摘要；不含设备地址、采集凭据或原始日志。'}</div>`;
   if (!dialog.open) dialog.showModal();
   if (restoreCloseFocus) dialog.querySelector('[data-action="close-dialog"]').focus({ preventScroll: true });
 }
@@ -279,6 +308,15 @@ app.addEventListener('click', (event) => {
   if (target.dataset.range) { state.range = target.dataset.range; render({ preserveFocus: true }); if (!isDemo && state.range === '7d') refreshHistory(); return; }
   if (target.dataset.eventFilter) { state.eventFilter = target.dataset.eventFilter; render({ preserveFocus: true }); return; }
   switch (target.dataset.action) {
+    case 'observation-refresh': {
+      if (observationCustom) {
+        const from = parseBeijingInput(app.querySelector('[data-control="observation-from"]').value), to = parseBeijingInput(app.querySelector('[data-control="observation-to"]').value);
+        if (!from || !to || Date.parse(to) < Date.parse(from) || Date.parse(to) - Date.parse(from) > 7 * 86400000 || Date.parse(to) > getNow() + 5000) { toast('请输入有效北京时间；结束不得晚于现在，时段最多 7 天。'); return; }
+        observationFrom = from; observationTo = to; observationPage = null;
+      }
+      loadObservations(); break;
+    }
+    case 'observation-older': loadObservations(true); break;
     case 'refresh': if (isDemo) { snapshot = demoSnapshot(state.scenario); render({ preserveFocus: true }); toast('已生成新的合成演示快照 · 未请求真实设备'); } else { refreshLive(true); } break;
     case 'clear-filters': state.search = ''; state.statusFilter = 'all'; render(); app.querySelector('[data-control="search"]')?.focus({ preventScroll: true }); break;
     case 'menu': state.menuOpen = !state.menuOpen; render(); if (state.menuOpen) app.querySelector('.sidebar .brand').focus(); break;
@@ -286,6 +324,8 @@ app.addEventListener('click', (event) => {
   }
 });
 app.addEventListener('change', (event) => {
+  if (event.target.dataset.control === 'observation-service') { observationService = event.target.value; loadObservations(); return; }
+  if (event.target.dataset.control === 'observation-hours') { observationHours = Number(event.target.value); observationCustom = false; loadObservations(); return; }
   if (isDemo && event.target.dataset.control === 'scenario') {
     state.scenario = event.target.value;
     snapshot = demoSnapshot(state.scenario);
@@ -297,6 +337,7 @@ app.addEventListener('change', (event) => {
   }
 });
 app.addEventListener('input', (event) => {
+  if (['observation-from', 'observation-to'].includes(event.target.dataset.control)) { observationCustom = true; return; }
   if (event.target.dataset.control === 'search') {
     state.search = event.target.value;
     document.querySelector('#service-rows').innerHTML = serviceRows();
@@ -354,8 +395,14 @@ function navigate(initial = false) {
   state.nextStatusFilter = null;
   state.eventFilter = 'all';
   state.menuOpen = false;
+  if (state.page === 'observations') {
+    const id = window.location.hash.split('/')[1];
+    if (id && view.services.some((item) => item.id === id)) observationService = id;
+    observationPage = null;
+  } else { observationAbort?.abort(); observationRequest++; }
   if (dialog.open) { dialogReturnFocus = null; dialog.close(); }
   render();
+  if (state.page === 'observations') loadObservations();
   if (!initial) {
     window.scrollTo({ top: 0, behavior: 'instant' });
     (returningToGroups ? app.querySelector(`[data-focus="category-${CSS.escape(state.lastCategory ?? '')}"]`) : null)?.focus({ preventScroll: true });
@@ -388,6 +435,7 @@ async function refreshLive(manual = false) {
   } finally { fetching = false; render({ preserveFocus: true }); if (dialog.open) openDetails(dialog.dataset.service); }
 }
 navigate(true);
+setInterval(() => { if (state.page === 'observations' && !observationLoading && observationPage && !observationCustom && !observationPage.truncated) loadObservations(); }, 30000);
 if (!isDemo) { refreshLive(); setInterval(() => { refreshLive(); if (state.range === '7d') refreshHistory(); }, 10000); }
 setInterval(() => {
   const next = deriveView(snapshot, getNow());

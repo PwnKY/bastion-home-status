@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -27,6 +28,10 @@ type Handler struct {
 }
 
 const readBudget = 4 * time.Second
+
+// A client clock may run slightly ahead of the server. Allow a small skew on
+// the requested upper bound instead of rejecting an otherwise valid window.
+const observationsClockSkew = 5 * time.Second
 
 type snapshotFlight struct {
 	done  chan struct{}
@@ -226,6 +231,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonResponse(w, 200, snapshot)
 	case "/api/v1/history":
+		// The alias reuses the existing protected edge read route.
+		if r.URL.Query().Get("resolution") == "raw" {
+			h.handleObservations(w, r)
+			return
+		}
+		if r.URL.Query().Get("resolution") != "" {
+			problem(w, 400, "invalid resolution")
+			return
+		}
 		if r.Method != "GET" {
 			problem(w, 405, "method not allowed")
 			return
@@ -256,6 +270,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResponse(w, 200, map[string]any{"serviceId": id, "rangeHours": hours, "points": points})
+	case "/api/v1/observations":
+		h.handleObservations(w, r)
 	case "/api/v1/incidents":
 		if r.Method != "GET" {
 			problem(w, 405, "method not allowed")
@@ -316,6 +332,73 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not found")
 	}
 }
+
+// handleObservations serves one configured service's raw persisted samples for a
+// bounded RFC3339 window (default last hour, maximum seven days). It follows the
+// same access contract as the other read endpoints (GET only, no application
+// Bearer credential; the private listener / edge access policy gates it) and
+// shares their read-budget and cancellation behaviour.
+func (h *Handler) handleObservations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		problem(w, 405, "method not allowed")
+		return
+	}
+	query := r.URL.Query()
+	id := query.Get("service")
+	found := false
+	for _, d := range h.Store.Config.Services {
+		if d.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		problem(w, 404, "service not found")
+		return
+	}
+	now := h.Now()
+	to := now
+	if value := query.Get("to"); value != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			problem(w, 400, "invalid to")
+			return
+		}
+		to = parsed
+	}
+	from := to.Add(-time.Hour)
+	if value := query.Get("from"); value != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			problem(w, 400, "invalid from")
+			return
+		}
+		from = parsed
+	}
+	if to.After(now.Add(observationsClockSkew)) || from.After(to) || to.Sub(from) > 7*24*time.Hour {
+		problem(w, 400, "invalid range")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), readBudget)
+	defer cancel()
+	page, err := h.Store.ObservationsContext(ctx, id, from, to, observationsMaxLimit, query.Get("cursor"))
+	if errors.Is(err, errInvalidObservationCursor) {
+		problem(w, 400, "invalid cursor")
+		return
+	}
+	if err != nil {
+		problem(w, 503, "data unavailable")
+		return
+	}
+	jsonResponse(w, 200, ObservationResponse{
+		ServiceID:    id,
+		From:         from.UTC().Format(time.RFC3339Nano),
+		To:           to.UTC().Format(time.RFC3339Nano),
+		Observations: page.Records,
+		NextCursor:   page.NextCursor,
+		Truncated:    page.Truncated,
+	})
+}
+
 func ValidateListen(address string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {

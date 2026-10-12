@@ -392,7 +392,35 @@
   }
 }
 
+@layer components {
+  .observation-controls { display: flex; gap: 16px; flex-wrap: wrap; align-items: end; padding: 0 24px 20px; }
+  .observation-controls label { display: grid; gap: 8px; color: var(--muted); font-size: 13px; }
+  .observation-controls label:first-child { flex: 1; min-width: 180px; }
+  .observation-controls :is(select, input) { width: 100%; min-height: 48px; max-width: 100%; font-size: 16px; padding: 10px 12px; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
+  .observation-controls label:not(:first-child) { min-width: 0; }
+  .observation-controls input { color-scheme: dark; min-width: 0; }
+  .observation-note { padding: 0 24px 20px; font-size: 13px; line-height: 1.8; color: var(--muted); }
+  .observation-summary { display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; padding: 16px 24px; border-top: 1px solid var(--border); font-size: 14px; color: var(--secondary); }
+  .observation-gaps { padding: 16px 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+  .observation-gaps summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+  .observation-gaps p { padding-bottom: 8px; line-height: 1.8; }
+  .observation-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(150px, .7fr) minmax(0, 2fr); gap: 16px; padding: 18px 24px; border-top: 1px solid var(--border-soft); font-size: 14px; align-items: start; }
+  .observation-row > div { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .observation-row small { display: block; width: 100%; font-size: 13px; color: var(--muted); line-height: 1.8; overflow-wrap: anywhere; }
+  .observation-row p { color: var(--secondary); line-height: 1.8; }
+  .observation-pagination { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; justify-content: space-between; padding: 20px 24px; border-top: 1px solid var(--border); font-size: 13px; line-height: 1.8; color: var(--muted); }
+  .observation-pagination > span { flex: 1; min-width: 150px; }
+  .dialog-history-link { padding: 20px 0; border-top: 1px solid var(--border); font-size: 14px; }
+}
 @layer responsive {
+  @media (max-width: 720px) {
+    .observation-controls { align-items: stretch; }
+    .observation-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  }
+  @media (max-width: 500px) {
+    .observation-controls { flex-direction: column; padding-inline: 18px; }
+    :is(.observation-note, .observation-summary, .observation-gaps, .observation-row, .observation-pagination) { padding-inline: 18px; }
+  }
   @media (max-width: 1250px) {
     .check-group-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }

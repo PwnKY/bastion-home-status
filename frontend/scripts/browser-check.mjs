@@ -80,7 +80,7 @@ try{
  await route('events');await click('[data-event-filter=resolved]');check('events retain filtered empty state',await evaluate("document.querySelector('.empty-state').textContent.includes('没有事件')"));
  for(const width of [1440,1024,768,390,320]){
   await viewport(width);
-  for(const page of ['overview','services','services/dns','services/all','paths','events']){
+  for(const page of ['overview','services','services/dns','services/all','paths','observations','events']){
    await route(page);check(`${width}px ${page} no horizontal overflow`,await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));
    check(`${width}px ${page} visible text >=13px`,await evaluate("(()=>{const w=document.createTreeWalker(document.querySelector('#app'),NodeFilter.SHOW_TEXT);let n;while(n=w.nextNode()){if(!n.textContent.trim())continue;const e=n.parentElement,r=e.getBoundingClientRect();if(r.width&&r.height&&r.right>0&&r.bottom>0&&getComputedStyle(e).visibility==='visible'&&parseFloat(getComputedStyle(e).fontSize)<13)return false;}return getComputedStyle(document.documentElement).fontSize==='16px';})()"));
   }
@@ -101,8 +101,12 @@ try{
  await command('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});await evaluate("document.documentElement.dataset.input='pointer'");
  check('reduced motion removes press transition',await evaluate("parseFloat(getComputedStyle(document.querySelector('[data-action=refresh]')).transitionDuration)<.001"));
  await command('Emulation.setEmulatedMedia',{features:[]});await viewport(720,550);
- for(const page of ['overview','services/dns','services/all','paths','events']){await route(page);check(`720px zoom-equivalent ${page} reflows`,await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));}
+ for(const page of ['overview','services/dns','services/all','paths','observations','events']){await route(page);check(`720px zoom-equivalent ${page} reflows`,await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));}
  await route('services/access');await click('[data-service=tailscale-path]');await screenshot('grouped-reference-detail.png',1440,1000);
+ await click('[data-action=close-dialog]'); await route('observations/ipv4');
+ check('raw history exposes single failure without confirmed-downtime claims',await evaluate("document.querySelector('.observation-summary').textContent.includes('1 单次失败') && document.querySelector('.observation-row .status-badge') && document.querySelector('.observation-note').textContent.includes('不据此计算持续时间 SLA')"));
+ check('evidence gaps stay unknown rather than fabricated normal',await evaluate("document.querySelector('.observation-gaps summary').textContent.includes('证据空缺（不等于故障）')"));
+ await viewport(1440,1000);const rawImage=await command('Page.captureScreenshot',{format:'png',clip:{x:0,y:0,width:1440,height:1000,scale:1}});await writeFile(path.join(root,'artifacts/observations-desktop.png'),Buffer.from(rawImage.data,'base64'));
  check('no JS runtime errors',errors.length===0);check('no device/API/external requests in synthetic preview',[...urls].every(url=>url.startsWith(origin)||url.startsWith('data:')));
  console.log(`\n${passed} grouped browser checks passed; generated screenshots only.`);
 }finally{

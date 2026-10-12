@@ -13,6 +13,7 @@ The collector additionally supports these private-config check kinds:
 | `peer-poll` | `path` | Existing peer-pinger local status poll fresh within 30 seconds; not control-server synchronization |
 | `peer-pinger` | `path`, `maxAgeSeconds` | Fresh ping events from currently online/present peers; not all peers or application traffic |
 | `control-stream` | `unit`, `maxAgeSeconds` (20–180), usually `intervalSeconds:30` | Recent growth of existing Tailscale control-response messages; not complete route/ACL synchronization |
+| `tailscale-tsmp` | `target`: explicit Tailscale IPv4 CGNAT or exact ULA `fd7a:115c:a1e0::/48` literal | One matched TSMP data-plane pong to ONE online peer; not DERP/direct path, subnet routing, OS or application |
 
 No adapter starts/stops a unit or invokes a shell. systemctl show and pvesh get use fixed argument lists, six-second deadlines and one-MiB output budgets. Unit names are validated. Stopped templates should not be configured as expected-running resources. Jobs use monotonic execution timestamps; missing/reboot-invalid timestamps are unknown, never assumed success.
 
@@ -35,6 +36,14 @@ The adapter invokes only fixed `systemctl show`, `tailscale status --json` and `
 The first reading, agent/daemon restart, counter reset, backwards uptime, unreadable snapshot or excessive read gap resets the volatile baseline to unknown. No tracker persistence turns startup counters into new traffic. The oldest possible message time is the **start of the preceding read**; current wall-clock polling is not a message timestamp. Unchanged counters retain the same event ID/age, then become unknown at the configured age budget. A local health warning is degraded, not a claim that all peers are down. Configure the adapter age no longer than the backend service validity window. No login/up/down/reconnect, peer ping or daemon/network configuration change is performed.
 
 This adapter requires the updated backend before collector activation: `checkedAgeSeconds` orders the newer assessment while `ageSeconds` still bounds evidence expiry. Queued/replayed observations age both clocks; replay never updates current. Reference timestamps shown by the frontend are explicitly source-clock records, not server-verified wall time. The control timestamp is labeled a window start, not an exact message-arrival timestamp.
+
+## Tailscale data-plane TSMP probe
+
+`tailscale-tsmp` sends exactly one TSMP ping to one configured, literal Tailscale peer. The target must be an unzoned literal in the Tailscale IPv4 CGNAT allocation or the exact Tailscale ULA prefix `fd7a:115c:a1e0::/48`; hostnames, ports, zones, mapped IPv4, RFC1918 and public addresses are rejected. Before sending, one read-only `tailscale status --json` must report `BackendState: Running`, and the configured literal must match exactly one known peer with `Online: true`. A self, absent or offline target is `unknown` with a fixed `tsmp_self` / `tsmp_absent` / `tsmp_offline` summary, and no ping is sent.
+
+The probe then runs one fixed, no-shell command `tailscale ping --tsmp --c=1 --timeout=3s --until-direct=false <literal>` inside a four-second bound and a bounded output budget. Only a single, unambiguous `pong ... via TSMP` for the configured target with a finite, bounded RTT becomes `healthy`. DERP/direct/ICMP or foreign-target output, extra lines and a non-finite RTT never become healthy. A verified-online peer that produces no matched TSMP reply is `down` (`tsmp_error`) without an RTT; an unreadable status, unknown command, permission failure or cancellation is `unknown` (`tsmp_unavailable`) and never becomes a claim that the peer is down.
+
+TSMP encrypts and authenticates the Tailscale data plane between this gateway and the selected peer, but it deliberately bypasses the OS/application stack and any advertised subnet routes: a matched pong does not prove DNS, HTTPS, playback, download, subnet reachability or business success, and the direction is always gateway -> selected peer. The underlying transport path (direct or relay) is never classified from status or CLI text; `pathMode` stays `unknown`. Each raw observation is a single sample with no duration weighting and is not an availability or SLA figure. No global tracking is kept, and the adapter never logs in, changes routes/ACLs, starts/stops units or modifies the network.
 
 ## Bounded LAN IPv4 and public IPv6 Echo
 

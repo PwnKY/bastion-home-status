@@ -41,6 +41,10 @@ func validateAdapter(c Check) error {
 		if _, err := icmpCheckTarget(c); err != nil || c.URL != "" || c.ProxyURL != "" || c.Socket != "" || c.Network != "" || c.ConnectIP != "" {
 			return errors.New("invalid ICMP configuration")
 		}
+	case "tailscale-tsmp":
+		if _, err := tsmpTarget(c.Target); err != nil || tsmpIncompatibleFields(c) {
+			return errors.New("invalid Tailscale TSMP configuration")
+		}
 	case "tcp":
 		host, port, err := net.SplitHostPort(c.Target)
 		n, e := strconv.Atoi(port)
@@ -76,6 +80,8 @@ func healthy() status.Observation {
 
 // These commands are fixed read-only APIs, never a configurable shell command.
 // Output and runtime are bounded; neither command output nor addresses are published.
+var errOutputBudget = errors.New("read-only output budget exceeded")
+
 type boundedOutput struct {
 	bytes.Buffer
 	limit int
@@ -83,7 +89,7 @@ type boundedOutput struct {
 
 func (b *boundedOutput) Write(p []byte) (int, error) {
 	if len(p) > b.limit-b.Len() {
-		return 0, errors.New("read-only output budget exceeded")
+		return 0, errOutputBudget
 	}
 	return b.Buffer.Write(p)
 }

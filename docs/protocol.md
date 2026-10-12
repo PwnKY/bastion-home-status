@@ -20,6 +20,7 @@
 | GET | `/api/v1/status` | 版本化摘要，无管理配置 |
 | GET | `/api/v1/history?service=ipv4&range=24h` | 48 个半小时窗口点 |
 | GET | `/api/v1/history?service=ipv4&range=7d` | 独立的 336 个窗口点 |
+| GET | `/api/v1/observations?service=ipv4&from=...&to=...` | 单服务原始观测，最多 1000 条，可分页 |
 | GET | `/api/v1/incidents` | 最多 100 条异常/恢复事件 |
 | GET | `/healthz` | 私网存储可达性；边缘不公开代理 |
 
@@ -63,6 +64,16 @@
 - 采集器同一 Linux kernel boot 内利用 uptime 重建缓存年龄，容忍墙钟偏差；重启后不能可靠推算年龄的补传使用 null，仅保留私有证据，不绘入时间线。
 - 所有缓存补传明确 `replay=true`，只进历史/证据，不能更新 current 或心跳；不论它声称时间多新。
 - 较旧实时样本不能覆盖最新状态；同一毫秒的重复时序保守忽略 current 更新。
+
+#Raw reads can also use the existing history read route with `resolution=raw`; other nonempty resolution values are rejected. The alias has the same window/cursor and access boundaries. See [continuous observations](continuous-observations.md).
+
+## 原始观测
+
+`GET /api/v1/observations` 返回一个已配置服务的原始持久化单探针记录。窗口为 RFC3339 的 `from`/`to`，默认最近一小时，最长七天，`to` 允许小量时钟偏差但不能超过当前时间。固定最多 1000 条；`nextCursor` 为有界、校验过的不透明游标，`truncated` 表示还有更多。与其它只读接口一致，它由边缘访问策略保护，不使用采集凭据。
+
+排序不是全局最新优先：先返回可定位观测（有 `observedAt`），按 `(observed, received, rowid)` 从新到旧稳定排序；随后追加不可定位的 replay（`observedAt` 为空），按 `(received, rowid)` 从新到旧排序。分页游标严格对应这两种顺序，保证定位/未定位两段各自不跳过、不重复；跨段时先耗尽定位段再进入未定位段。
+
+每条记录只含原始 `status`/`code` 及固定摘要、`observedAt`、`receivedAt`、`expiresAt`、仅 healthy/degraded 的 `latencyMs`、`pathMode`、`replay` 标志和可选有界 `evidence`；不含样本/采集器 ID、payload、地址、凭据或原始日志。返回的是持久化的原始单次结果，因此单次失败不会被后端的三次确认改写成未知；`replay` 明确为历史记录，读取不会更新 current。无法定位来源时间的 replay（`observedAt` 为空）按服务端接收时间保守纳入窗口并明确标记。
 
 ## 当前与历史语义
 
