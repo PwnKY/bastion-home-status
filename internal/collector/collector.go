@@ -196,17 +196,49 @@ func (a *Agent) post(ctx context.Context, path string, payload any) error {
 func (a *Agent) Heartbeat(ctx context.Context) error {
 	return a.post(ctx, "/api/v1/heartbeat", status.Heartbeat{ID: ID()})
 }
+
+// scheduleDue reports whether a check anchored at the previous scheduled
+// deadline prev is due at now and returns the next deadline to store. The phase
+// stays locked to prev (next = prev + k*interval) so ticker jitter can neither
+// skip a period nor drift a check later. A deadline at most a small slack in the
+// future still counts as due, absorbing the sub-100ms gap between the round
+// ticker and the instant Collect reads; a missed tick advances to the first
+// future deadline instead of replaying every missed period. The monotonic
+// reading carried by prev and now is used throughout.
+func scheduleDue(prev, now time.Time, interval time.Duration) (bool, time.Time) {
+	if interval <= 0 {
+		return true, now
+	}
+	if prev.IsZero() {
+		// The first observation runs immediately and anchors the phase at now.
+		return true, now.Add(interval)
+	}
+	slack := interval / 10
+	if slack > 100*time.Millisecond {
+		slack = 100 * time.Millisecond
+	}
+	if now.Add(slack).Before(prev) {
+		// Far too early: keep the pending deadline and phase untouched.
+		return false, prev
+	}
+	periods := now.Sub(prev)/interval + 1
+	if periods < 1 {
+		periods = 1
+	}
+	return true, prev.Add(periods * interval)
+}
 func (a *Agent) Collect(ctx context.Context) Queued {
 	now := time.Now()
 	checks := []Check{}
 	for _, c := range a.Config.Checks {
-		if !now.Before(a.next[c.ServiceID]) {
+		interval := c.IntervalSeconds
+		if interval == 0 {
+			interval = a.Config.IntervalSeconds
+		}
+		due, next := scheduleDue(a.next[c.ServiceID], now, time.Duration(interval)*time.Second)
+		if due {
 			checks = append(checks, c)
-			interval := c.IntervalSeconds
-			if interval == 0 {
-				interval = a.Config.IntervalSeconds
-			}
-			a.next[c.ServiceID] = now.Add(time.Duration(interval) * time.Second)
+			a.next[c.ServiceID] = next
 		}
 	}
 	samples := make([]status.Observation, len(checks))
