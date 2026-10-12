@@ -47,7 +47,12 @@ function command(method, params = {}) { const id = ++seq; return new Promise((re
 async function evaluate(expression) { const r = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text); return r.result.value; }
 async function click(selector) { await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`); await wait(100); }
 async function route(hash) { await evaluate(`location.hash=${JSON.stringify(hash)}`); await wait(100); }
-async function refresh() { await click('[data-action=refresh]'); await retry(async () => { assert.equal(await evaluate("document.querySelector('.demo-badge').textContent"), '真实观测'); }); }
+async function refresh() {
+  // Wait for the next render, rather than accepting the previous 'live' badge.
+  await evaluate("document.querySelector('.demo-badge').textContent='等待本次刷新'");
+  await click('[data-action=refresh]');
+  await retry(async () => { assert.equal(await evaluate("document.querySelector('.demo-badge').textContent"), '真实观测'); });
+}
 async function post(endpoint, payload, credential = token) { const response = await fetch(`${backendOrigin}/api/v1/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${credential}` }, body: JSON.stringify(payload) }); assert.equal(response.status, 200); }
 const id = () => randomBytes(16).toString('hex');
 async function sample(serviceId, status = 'healthy', extra = {}) { await post('ingest', { id: id(), replay: false, samples: [{ id: id(), serviceId, status, code: status === 'healthy' ? 'ok' : 'http_error', ageSeconds: 0, latencyMs: status === 'healthy' ? 18 : null, ...extra }] }); await wait(5); }
